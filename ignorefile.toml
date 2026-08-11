@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Elio Severo Junior <elioseverojunior@gmail.com>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+version = 1
+
+[[gitignore.section]]
+
+[[gitignore.section.rule]]
+note = """
+SPDX-FileCopyrightText: Elio Severo Junior <elioseverojunior@gmail.com>
+
+SPDX-License-Identifier: MIT OR Apache-2.0"""
+
+[[gitignore.section]]
+level = 3
+name = "Rust"
+note = "Cargo Ignores"
+
+[[gitignore.section.rule]]
+ignore = ["/target"]
+
+[[gitignore.section.rule]]
+note = "Cargo Package"
+ignore = ["**/dist"]
+
+[[gitignore.section.rule]]
+note = "Cargo Vet"
+ignore = ["**/.cargo-vet"]

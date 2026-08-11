@@ -1,0 +1,57 @@
+# >>> PER-PROJECT: only SPDX-PackageName and SPDX-PackageDownloadLocation are
+# project identity. SPDX-PackageSupplier and the SPDX-FileCopyrightText below
+# name the COPYRIGHT HOLDER, not the project, and so stay put across every
+# workspace cloned from this template — that is deliberate: tying the copyright
+# line to the project name meant every rename rewrote the header of all 26 files.
+# `comply` regenerates the per-file headers from the copyright field, so change
+# it here rather than hand-editing headers. See the PER-PROJECT note in
+# Cargo.toml for the full list of places identity lives.
+version = 1
+SPDX-PackageName = "rust-workspaced"
+SPDX-PackageSupplier = "Elio Severo Junior <elioseverojunior@gmail.com>"
+SPDX-PackageDownloadLocation = "https://github.com/elioseverojunior/rust-workspaced"
+
+[[annotations]]
+path = ["**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Elio Severo Junior <elioseverojunior@gmail.com>"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[tool.comply]
+# Custom comply settings
+ignore = [
+  "**/*.lock",
+  "**/mutants*/",
+  "**/bench-report/",
+  "**/.rumdl_cache/",
+  "**/.remember/",
+  "**/.aider.*/",
+  "**/dist/",
+  # Trailing "/**" is load-bearing: every other entry here ends in "/", and
+  # the bare "**/*yaml-test-suite/data" form matched only the directory node,
+  # not the files under it -- so an annotate run rewrote 978 fixtures inside
+  # the vendored yaml-test-suite submodule. That corpus is upstream's, is
+  # byte-compared by the conformance tests, and must never be annotated.
+  "**/*yaml-test-suite/data/",
+  "**/*yaml-test-suite/data/**",
+  # Generated files whose content must match their generator byte for byte.
+  # committed.toml comes from commit-types.toml via scripts/commit-config.py,
+  # which does not emit an SPDX header (unlike the cliff.toml and .gitmessage
+  # it writes alongside), so annotating it made `commit-config check` report
+  # drift and blocked every commit. cargo-vet rewrites its own lock.
+  "committed.toml",
+  "supply-chain/.cargo-vet/**",
+]
+
+[[tool.comply.comment-styles]]
+close = ""
+filenames = [".gitmessage"]
+line = ""
+open = "#"
+
+[[tool.comply.comment-styles]]
+close = ""
+extensions = ["pkl"]
+filenames = ["hk.pkl"]
+line = ""
+open = "//"

@@ -1,0 +1,469 @@
+# SPDX-FileCopyrightText: Elio Severo Junior <elioseverojunior@gmail.com>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Setup Rust Environment
+
+concurrency:
+  group: setup-rust-env-${{ github.ref_name }}
+  cancel-in-progress: ${{ github.ref_name != github.event.repository.default_branch }}
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      runs-on:
+        description: "The runner to use for the tests"
+        required: false
+        default: ubuntu-latest
+        type: choice
+        options:
+          - ubuntu-latest
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - ubuntu-22.04
+          - ubuntu-22.04-arm
+          - macos-latest
+          - macos-15
+          - macos-14
+          - windows-latest
+          - windows-2025
+          - windows-2022
+      ## 
+      toolchain:
+        description: >
+          Rust toolchain channel. Empty by default so the action reads
+          rust-toolchain.toml, keeping that file the single source of truth. Naming
+          a channel here overrides it for the whole job -- the action exports
+          RUSTUP_TOOLCHAIN, which outranks every rust-toolchain.toml in the tree --
+          so set it only for jobs that genuinely need another channel (nightly).
+        required: false
+        default: ""
+      profile:
+        description: >
+          rustup profile. `minimal` by default, not rustup's own `default`: the
+          difference is rust-docs, 902 MB of offline std documentation that no job
+          here reads. Everything the gates need is requested as a component instead.
+        required: false
+        default: "minimal"
+      components:
+        description: >
+          EXTRA rustup components, added to the clippy/rustfmt/llvm-tools this
+          action always installs (e.g. rust-src for a nightly job). These add to
+          that set rather than replacing it.
+        required: false
+        default: ""
+      targets:
+        description: "Additional rustup targets (e.g., wasm32-unknown-unknown)"
+        required: false
+        default: ""
+      cargo-tools:
+        description: "Space-separated list of cargo tools to install"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # `mise run` installs [tools] before every task, which overrides mise-action's
+  # `install: false`: the Supply Chain job spent 8m57s having `mise run comply`
+  # build all 26 pinned tools from source, because mise looks for cargo-binstall
+  # at ~/.cargo/bin and CI has none, so its cargo backend compiles instead. The
+  # gates below use mise for its config flags, not for provisioning --
+  # setup-rust-env has already put every tool they need on PATH as a prebuilt
+  # binary.
+  MISE_TASK_RUN_AUTO_INSTALL: false
+  # mise.toml's [env] does `GITHUB_TOKEN = {{env.GITHUB_TOKEN | default(value='')}}`,
+  # so with nothing set it exports an EMPTY token -- worse than unset, since any
+  # tool that reads it then makes unauthenticated, rate-limited API calls.
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+  # Git revisions of the two tools with no installable release artifacts. These
+  # were `inputs` while this lived in a composite action, where an input default
+  # applies on every call. Here it would not: a workflow_dispatch default is
+  # applied ONLY on a dispatch, and on push/pull_request the whole `inputs`
+  # context is null -- so `inputs.ignorefile-rev` expanded to the empty string
+  # and `cargo install --rev ""` failed with
+  # `Invalid pattern ''; class=Invalid (3); code=InvalidSpec (-12)`.
+  # env is the right home regardless: both are pins for reproducibility, not
+  # knobs anyone should be turning from the Actions UI. Bump them here.
+  #
+  # comply IS on crates.io, but only as semver prereleases, which `cargo install`
+  # skips -- and its releases carry no binary assets, so cargo-binstall cannot
+  # serve it either. ignorefile publishes no tags at all yet.
+  IGNOREFILE_REV: 0ad0e20042b173838394c58c768225255afb3955
+  COMPLY_REV: a4639db7f4a6c509af4f2325a3c513966e6aabe9
+
+jobs:
+  # Exercises the setup-rust-env composite end to end. It used to call the action
+  # and stop, which proved only that the steps exited zero -- it could not catch
+  # the action provisioning nothing, renaming an output, or dropping a tool a
+  # downstream gate depends on. The assertions below are the point of the job.
+  tests:
+    name: Tests
+    runs-on: ${{ vars.RUNS_ON_ARM64 || vars.RUNS_ON || inputs.runs-on || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    steps:
+      # Two steps, because a YAML key cannot be conditionally omitted. act
+      # substitutes its copy-the-working-tree shortcut only for a checkout
+      # carrying no `ref`/`token`; given either it runs the real action, which
+      # fetches from GitHub and dies with `upload-pack: not our ref` on any
+      # commit not yet pushed -- every commit worth testing locally. Blanking
+      # them is not a way out: the action then fails validation with
+      # `Input required and not supplied: token`.
+      #
+      # `!= 'true'` rather than `== 'false'`: the variable is unset on GitHub,
+      # where `'' == 'false'` is also false, which would have taken the act path
+      # in the one place the real checkout is required. `mise run act:setup`
+      # writes ACT=true into `.act/.vars`.
+      - name: Checkout
+        if: ${{ vars.ACT != 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: "recursive"
+          fetch-depth: 0
+          fetch-tags: "true"
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN || github.token }}
+
+      - name: GitHub Actions Bot Configuration
+        id: bot-config
+        env:
+          GITHUB_BOT_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+          GITHUB_BOT_USERNAME: "github-actions[bot]"
+        shell: bash -l {0}
+        run: |
+          #!/usr/bin/env bash
+
+          set -Eeuo pipefail
+
+          echo "GITHUB_BOT_EMAIL=${{ env.GITHUB_BOT_EMAIL }}" >> "$GITHUB_ENV"
+          echo "GITHUB_BOT_USERNAME=${{ env.GITHUB_BOT_USERNAME }}" >> "$GITHUB_ENV"
+
+          git config --global author.email "${{ env.GITHUB_BOT_EMAIL }}"
+          git config --global author.name "${{ env.GITHUB_BOT_USERNAME }}"
+          git config --global committer.email "${{ env.GITHUB_BOT_EMAIL }}"
+          git config --global committer.name "${{ env.GITHUB_BOT_USERNAME }}"
+          git config --global core.autocrlf input
+          git config --global init.defaultBranch ${{ github.event.repository.default_branch }}
+          git config --global pull.ff only
+          git config --global pull.rebase true
+          git config --global push.autosetupremote true
+          git config --global push.followTags true
+          git config --global user.email "${{ env.GITHUB_BOT_EMAIL }}"
+          git config --global user.name "${{ env.GITHUB_BOT_USERNAME }}"
+
+          echo "bot-email=${{ env.GITHUB_BOT_EMAIL }}" >> "$GITHUB_OUTPUT"
+          echo "bot-user=${{ env.GITHUB_BOT_USERNAME }}" >> "$GITHUB_OUTPUT"
+
+      # .cargo/config.toml pins `-fuse-ld=mold` for x86_64-unknown-linux-gnu with
+      # no fallback, so mold is a hard requirement for ANY cargo invocation there,
+      # not the optimisation its comment implies. It belongs here rather than in
+      # one workflow: it used to be installed only by cicd.yml's `quick` job, so
+      # every other compiling job failed with
+      # `clang: error: invalid linker name in argument '-fuse-ld=mold'`.
+      # Caches the .deb, not the installed files: mold's dependencies (libc6,
+      # libgcc-s1, libstdc++6, zlib1g) are all base-system packages present on any
+      # runner, so `dpkg -i` needs no dependency resolution and the cache stays a
+      # couple of megabytes.
+      - name: Cache mold package
+        id: mold-cache
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/mold-deb
+          key: mold-deb-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install mold (required by .cargo/config.toml on Linux)
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          if command -v mold >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          mkdir -p "$HOME/.cache/mold-deb"
+          # `apt-get update` is the expensive half of this step, so it runs only
+          # when the package is not already cached.
+          if ! ls "$HOME/.cache/mold-deb"/mold_*.deb >/dev/null 2>&1; then
+            sudo apt-get update
+            (cd "$HOME/.cache/mold-deb" && apt-get download mold)
+          fi
+          sudo dpkg -i "$HOME/.cache/mold-deb"/mold_*.deb
+
+      # `minimal` plus exactly what the gates use, rather than `default`: the
+      # default profile installs rust-docs, which is 902 MB of a 1.7 GB toolchain
+      # and which no CI job opens. Not installing it beats caching it -- a
+      # ~/.rustup cache would have traded a 26s install for restoring a multi-
+      # gigabyte archive, and eaten most of the 10 GB per-repo cache budget that
+      # the cargo-bin and target caches actually earn their place in.
+      #
+      # A caller's `components` ADD to this set; they do not replace it. A job that
+      # asks for an extra component would otherwise be left without clippy or
+      # rustfmt for the gates that follow.
+      - name: Resolve toolchain components
+        id: components
+        shell: bash
+        env:
+          EXTRA: ${{ inputs.components }}
+        run: |
+          list="clippy,rustfmt,llvm-tools"
+          if [ -n "$EXTRA" ]; then
+            list="${list},${EXTRA}"
+          fi
+          echo "list=${list}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust toolchain
+        id: rust-toolchain
+        uses: elioseverojunior/rust-toolchain@cc930421e15b142a7a8ff8dd96ffdb24f8ebf1e3 # v0.5.0-11
+        with:
+          # `|| 'minimal'` rather than leaning on the input default: that default
+          # is applied on a dispatch and nowhere else, so a push run passed the
+          # empty string and got upstream's own default -- `default`, which pulls
+          # rust-docs, 902 MB of a 1.7 GB toolchain that no gate here opens.
+          # toolchain/targets/components need no such fallback: empty is their
+          # intended value, meaning "read rust-toolchain.toml" and "add nothing".
+          toolchain: ${{ inputs.toolchain }}
+          profile: ${{ inputs.profile || 'minimal' }}
+          components: ${{ steps.components.outputs.list }}
+          targets: ${{ inputs.targets }}
+          # Replaces the taiki-e/install-action step that used to follow. The
+          # action installs these with `cargo install` -- from source, where
+          # install-action fetched a prebuilt binary -- so it is only an
+          # improvement with `cache: true` below, which pays for the build once
+          # and serves it from the `bin` layer afterwards. That layer keys on the
+          # resolved tool set ALONE, excluding rustup's shims, so a compiler bump
+          # does not reinstall them.
+          cargo-tools: ${{ inputs.cargo-tools || 'cargo-binstall' }}
+          # `cache-key-hash` is mandatory once the registry/build layers are on:
+          # without it "those keys never change: they hit exactly on every run and
+          # serve the same crates for the life of the repository". hashFiles is a
+          # workflow expression a Node action cannot call, hence passing it in.
+          cache: true
+          cache-key-hash: ${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Get Rust version
+        id: rust-version
+        shell: bash
+        run: echo "version=$(rustc --version)" >> "$GITHUB_OUTPUT"
+
+      - name: Compute cache key
+        id: cache-names
+        shell: bash
+        # Through the environment, not `${{ }}` interpolation: the tool list is an
+        # action input, and expanding one straight into a shell body is the
+        # script-injection shape GitHub warns about.
+        # IGNOREFILE_REV and COMPLY_REV are not repeated here: the workflow-level
+        # `env:` block already puts both in every step's environment, and a second
+        # declaration is one more place to forget when a pin moves.
+        env:
+          CARGO_TOOLS: ${{ inputs.cargo-tools || 'cargo-binstall' }}
+        run: |
+          cache_key="cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}"
+          echo "cache-key=${cache_key}" >> "$GITHUB_OUTPUT"
+          shared_key="${{ steps.rust-toolchain.outputs.name }}"
+          echo "cache-shared-key=${shared_key}" >> "$GITHUB_OUTPUT"
+
+          # `hashFiles` reads files, and the tool list is a string, so the key for
+          # the binary cache is hashed here instead. Keying on the list means
+          # adding or removing a tool invalidates it and nothing else does; the
+          # toolchain is in the key because the binaries sit alongside rustup's
+          # own shims in the same directory.
+          if command -v sha256sum >/dev/null 2>&1; then
+            tools_hash="$(printf '%s' "$CARGO_TOOLS" | sha256sum)"
+          else
+            tools_hash="$(printf '%s' "$CARGO_TOOLS" | shasum -a 256)"
+          fi
+          # The ISO week bounds staleness. Every tool is requested `@latest`, and
+          # the install step is skipped outright on a cache hit, so without a
+          # rotating component a hit would pin these binaries forever. One slow
+          # run a week buys a predictable refresh.
+          # Both git-source revs are in the key: this cache carries the ignorefile
+          # AND comply binaries, and their install steps are skipped on a hit. A
+          # key that named only one would keep serving a stale build of the other
+          # after its pin moved.
+          if command -v sha256sum >/dev/null 2>&1; then
+            revs_hash="$(printf '%s-%s' "$IGNOREFILE_REV" "$COMPLY_REV" | sha256sum)"
+          else
+            revs_hash="$(printf '%s-%s' "$IGNOREFILE_REV" "$COMPLY_REV" | shasum -a 256)"
+          fi
+          bin_key="cargo-bin-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-toolchain.outputs.name }}-${tools_hash:0:16}-${revs_hash:0:16}-$(date -u +%G%V)"
+          echo "cargo-bin-key=${bin_key}" >> "$GITHUB_OUTPUT"
+
+      # Skipped outright on a cache hit. install-action does not consult the
+      # filesystem: asked for `cargo-audit@latest` it prints `info: installing`
+      # and downloads, whatever is already in `~/.cargo/bin`. Restoring the cache
+      # alone therefore changed nothing -- the binaries were present and all 21
+      # were fetched again regardless. The hit itself has to gate the step.
+      # hk.pkl's `gitignore` step runs `mise run gitignore:check`, and cicd.yml's lint
+      # job runs `hk check --all` -- so without this the gate fails with
+      # `ignorefile: command not found`. Not in mise.toml's [tools] because mise's
+      # cargo backend emits a bare `cargo install --git=<url>` with no package
+      # selector, which cargo rejects with "multiple packages with binaries found";
+      # mise.toml documents that at `ignorefile:install`.
+      #
+      # Only the CLI: the LSP and MCP binaries are for an editor, and this is a
+      # source build, so each one omitted is a compile skipped. Guarded by the same
+      # cache hit as the tools above, and lands in the same `~/.cargo/bin` the
+      # cache carries.
+      # No `if:` guard: the `cargo-bin` actions/cache step these three used to be
+      # gated on was removed along with Swatinem/rust-cache, and a condition on a
+      # step id that no longer exists reads as "" != 'true' -- permanently true.
+      # It was not skipping anything, it was only hiding that fact from actionlint.
+      # Restore a real guard when the toolchain action's `bin` cache layer is
+      # wired up (`cache: true`), keying off that layer's result instead.
+      - name: Install ignorefile (from source; no release binaries published)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo install --locked \
+            --git https://github.com/elioseverojunior/ignorefile \
+            --rev "${IGNOREFILE_REV}" \
+            ignorefile-cli
+
+      # Same reasoning as ignorefile above, and the same guard. comply drives
+      # hk.pkl's `comply`, `comply-fix` and `comply-format` steps, which cicd.yml's
+      # lint job reaches through `hk check --all`; without it that gate fails with
+      # `comply: command not found`.
+      #
+      # It used to sit in mise.toml's [tools] as a `cargo:` git entry. cargo-binstall
+      # cannot serve a git source, so `mise install` compiled it from scratch in
+      # every job -- around 3.5 minutes each. Run 30706537351 spent 7m19s inside
+      # `mise install --locked` and was cancelled still compiling. Installed here it
+      # is built once per cache miss instead of once per job.
+      - name: Install comply (git source; no binstallable release assets)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo install --locked \
+            --git https://github.com/elioseverojunior/comply \
+            --rev "${COMPLY_REV}" \
+            comply
+
+      # taiki-e/install-action used to sit here. It is gone because the toolchain
+      # action's `cargo-tools` input above covers it -- upstream's own comparison
+      # table lists install-action as "Replaced -- cargo-tools, cached in the bin
+      # layer". Keeping both meant installing the same binaries twice per job.
+      - name: Setup mise
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with:
+          cache_key_prefix: mise
+          cache_key: mise-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/mise.lock') || hashFiles('**/mise.toml') }}
+
+
+      # The outputs are re-pointed sources, not passthroughs, which is exactly
+      # why they need asserting: `rust-version` now reads rust-toolchain's `name`
+      # and `cache-key` its `cachekey`, where both were previously produced by
+      # shell steps this composite owned. A rename upstream turns them into empty
+      # strings, and an empty string is indistinguishable from "not set" in every
+      # consumer -- so nothing else would report it.
+      #
+      # Through `env:` rather than inline `${{ }}`: a value containing shell
+      # metacharacters must not be interpreted as script.
+      # `steps.rust-env` was the composite invocation; inlining it dissolved that
+      # id, and an unknown step id yields "" rather than an error -- so all three
+      # of these were empty and the `-n` check below would have failed the job one
+      # step after the cargo install did. They now read the inlined steps directly.
+      - name: Assert action outputs are populated
+        env:
+          RUST_VERSION: ${{ steps.rust-version.outputs.version }}
+          CACHE_KEY: ${{ steps.cache-names.outputs.cache-key }}
+          CACHE_HIT: ${{ steps.rust-toolchain.outputs.cache-hit }}
+        run: |
+          set -Eeuo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          printf 'rust-version = %s\ncache-key    = %s\ncache-hit    = %s\n' \
+            "${RUST_VERSION}" "${CACHE_KEY}" "${CACHE_HIT}"
+
+          [ -n "${RUST_VERSION}" ] \
+            || fail "rust-version output is empty; rust-toolchain's \`name\` output moved or vanished"
+          [ -n "${CACHE_KEY}" ] \
+            || fail "cache-key output is empty; rust-toolchain's \`cachekey\` output moved, or cache: true stopped taking effect"
+
+      # Guards the `Resolve toolchain components` step, which MERGES a caller's
+      # extra components into clippy/rustfmt/llvm-tools rather than replacing
+      # them. Get that wrong and the toolchain still installs -- the job fails
+      # later, in whichever gate reaches for the missing component, far from the
+      # cause. llvm-tools is checked through llvm-profdata because the component
+      # ships binaries rather than a rustup shim.
+      - name: Assert toolchain and components
+        run: |
+          set -Eeuo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          rustc --version || fail "rustc not on PATH"
+          cargo --version || fail "cargo not on PATH"
+          cargo clippy --version || fail "clippy missing; the components merge dropped it"
+          cargo fmt --version || fail "rustfmt missing; the components merge dropped it"
+
+          # llvm-tools lands beside rustc in the toolchain's lib dir, not on PATH.
+          sysroot="$(rustc --print sysroot)"
+          find "${sysroot}" -name 'llvm-profdata*' -print -quit | grep -q . \
+            || fail "llvm-tools missing; tarpaulin's llvm engine cannot instrument doctests without it"
+
+      # THE REGRESSION GUARD for the decision to keep `~/.cargo/bin` out of
+      # rust-toolchain's `bin` cache layer. That layer keys on the resolved
+      # versions of its own `cargo-tools` input alone; comply and ignorefile are
+      # `cargo install --git --rev` builds sharing the same directory, so their
+      # revs cannot appear in it and a rev bump would keep serving a stale
+      # binary. If someone later simplifies by delegating `bin`, these two are
+      # what breaks -- silently, because a stale binary still runs.
+      #
+      # They are not decorative: hk.pkl's `gitignore` step shells out to
+      # ignorefile and its `comply`/`comply-fix`/`comply-format` steps to comply,
+      # all of which cicd.yml's lint job reaches through `hk check --all`.
+      - name: Assert git-sourced tools are installed
+        run: |
+          set -Eeuo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          command -v comply >/dev/null 2>&1 \
+            || fail "comply not on PATH; \`hk check --all\` fails with 'comply: command not found'"
+          command -v ignorefile >/dev/null 2>&1 \
+            || fail "ignorefile not on PATH; mise run gitignore:check fails with 'ignorefile: command not found'"
+
+          comply --version || true
+          ignorefile --version || true
+
+      # cargo-binstall is the default `cargo-tools` entry and exists for mise's
+      # benefit: mise's `cargo:` backend looks for it at ~/.cargo/bin and, absent,
+      # compiles every pinned tool from source -- the ~9 minute `mise install`
+      # this whole arrangement was built to avoid. mise itself comes from
+      # mise-action and every later gate invokes it.
+      - name: Assert provisioning tools
+        run: |
+          set -Eeuo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          command -v cargo-binstall >/dev/null 2>&1 \
+            || fail "cargo-binstall missing; mise falls back to compiling every pinned tool from source"
+          command -v mise >/dev/null 2>&1 \
+            || fail "mise not on PATH; mise-action did not provision"
+
+      # .cargo/config.toml pins `-fuse-ld=mold` for x86_64-unknown-linux-gnu with
+      # NO fallback, so on that target mold is a hard requirement for any cargo
+      # invocation rather than an optimisation. Without it every compiling job
+      # dies with `clang: error: invalid linker name in argument '-fuse-ld=mold'`.
+      # Guarded on the same condition the install step uses, so the assertion
+      # cannot fail on a platform that never installs it.
+      - name: Assert mold (Linux x64 only)
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        run: |
+          set -Eeuo pipefail
+          command -v mold >/dev/null 2>&1 \
+            || { echo "::error::mold missing; every cargo build on this target fails on -fuse-ld=mold"; exit 1; }
+          mold --version
+
+      # The end-to-end proof: a real compile through the linker and toolchain the
+      # steps above only inspected. `cargo metadata` would not exercise the
+      # linker, and `--all-features` is what pulls in the optional CLI surface.
+      # Skipped under act by default -- the assertions above are what local runs
+      # are for, and a cold workspace check costs minutes in a container.
+      - name: Assert the workspace actually builds
+        if: ${{ vars.ACT != 'true' }}
+        run: cargo check --workspace --all-features --locked

@@ -1,0 +1,696 @@
+# SPDX-FileCopyrightText: Elio Severo Junior <elioseverojunior@gmail.com>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# mise task definitions ~ https://mise.jdx.dev/tasks/
+#
+# The Rust toolchain is deliberately NOT pinned in a [tools] block here:
+# rust-toolchain.toml is the single source of truth (rustup, cargo, IDEs and mise
+# all read it), so a channel duplicated here would be a second thing to keep in
+# sync — and the two silently disagreeing is worse than having only one.
+[settings]
+color = true
+experimental = true
+idiomatic_version_file = true
+idiomatic_version_file_enable_tools = []
+legacy_version_file = false
+lockfile = true
+not_found_auto_install = true
+python.uv_venv_auto = "create|source"
+quiet = true
+
+[env]
+ARCH = "{{exec(command='uname -m')}}"
+PROJECT_NAME = "{{exec(command='basename $(git config --get remote.origin.url) .git || {{ config_root }}')}}"
+RUST_COVERAGE_THRESHOLD = "100"
+_.file = ".env"
+
+# The compile gate. `--all-targets` is what makes it one: a bare `cargo build`
+# compiles lib and bin targets only, so `#[cfg(test)]` code, benches and examples
+# are never type-checked and a green build says nothing about them. Since
+# .cargo/config.toml sets `rustflags = ["-D", "warnings"]`, this also promotes
+# every rustc warning in workspace code to a hard error.
+#
+# `--all-features` is a no-op while no `[features]` table exists, and is here so
+# it keeps holding once one does. The caveat to know: if features ever become
+# mutually exclusive, `--all-features` cannot express that and this task has to
+# grow an explicit matrix.
+[tasks.build]
+description = "Compile every workspace member - all features, all targets"
+dir = "{{ config_root }}"
+usage = '''
+flag "--release" help="use the release profile instead of dev"
+arg "[cargo-args]" var=#true help="extra flags forwarded verbatim to cargo (e.g. --locked)"
+'''
+run = '''
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# mise hands variadic args over as ONE space-separated string, so split it back
+# into an array instead of interpolating it unquoted. The `array[@]+` guard is
+# what keeps an EMPTY array from tripping `set -u` on older bash.
+extra=()
+[ -z "${usage_cargo_args:-}" ] || read -ra extra <<< "${usage_cargo_args}"
+
+args=(--workspace --all-features --all-targets)
+[ -z "${usage_release:-}" ] || args+=(--release)
+
+cargo build "${args[@]}" ${extra[@]+"${extra[@]}"}
+'''
+
+# Runs the tests in TWO passes, because one cargo invocation cannot cover both.
+# Cargo documents `--all-targets` as "Test all targets (does not include
+# doctests)", so the obvious single-command version reports success with every
+# doctest unrun - and the thing that silently rots is the example code on the
+# crate's own docs.rs page.
+[tasks.test]
+description = "Run every workspace test - all features, all targets, plus doctests"
+dir = "{{ config_root }}"
+usage = '''
+flag "--release" help="use the release profile instead of dev"
+arg "[cargo-args]" var=#true help="extra flags forwarded verbatim to cargo (e.g. --no-fail-fast)"
+'''
+run = '''
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+extra=()
+[ -z "${usage_cargo_args:-}" ] || read -ra extra <<< "${usage_cargo_args}"
+
+args=(--workspace --all-features)
+[ -z "${usage_release:-}" ] || args+=(--release)
+
+# Pass 1: unit, integration, bench and example targets.
+cargo test "${args[@]}" --all-targets ${extra[@]+"${extra[@]}"}
+
+# Pass 2: doctests. Guarded, because `--doc` does not merely find nothing in a
+# workspace with no library target - it HARD-ERRORS with "no library targets
+# found", which would fail this task for any binary-only project cloned from
+# this template. Cargo publishes a per-target `doctest` flag in its metadata,
+# which is precisely this question, so ask the manifest rather than assume.
+doctests=$(cargo metadata --format-version 1 --no-deps \
+  | jq -r '[.packages[].targets[] | select(.doctest)] | length')
+
+if [ "${doctests}" -eq 0 ]; then
+  echo "no doctest-bearing targets in this workspace - skipping the --doc pass"
+else
+  cargo test "${args[@]}" --doc ${extra[@]+"${extra[@]}"}
+fi
+'''
+
+# Rewrites the project name everywhere it appears. This automates the checklist
+# in the root Cargo.toml (`>>> PER-PROJECT`) rather than restating it: that list
+# names five files by hand, and a list of filenames is exactly the thing that
+# goes stale. Here the file set is discovered, so a sixth place gets caught for
+# free — Cargo.lock already is one, and it is not on that list.
+#
+# PREVIEWS BY DEFAULT. Nothing is written without --apply, because the argument
+# is a free-text string that lands in every manifest in the workspace; seeing the
+# hit list first is cheap and a wrong name is not obvious after the fact.
+#
+# Nothing here names a project: the current name defaults to the repo directory
+# and everything else is derived, so this task works unedited in any workspace
+# cloned from this template — including after it has already been renamed once.
+[tasks.rename]
+description = "Rewrite the project name across the workspace - previews unless --apply"
+dir = "{{ config_root }}"
+usage = '''
+arg "<new-name>" help="new project name (crates.io rules: letter first, then A-Za-z0-9_-)"
+flag "--apply" help="write the changes; without it the task only reports what would change"
+flag "--from <old-name>" help="current name to replace (default: the repo directory name)"
+'''
+run = '''
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# mise renders this script as a Tera template BEFORE running it, so Tera's
+# delimiters - a doubled brace, brace-percent and brace-hash - are reserved
+# sequences here, including inside shell comments (which is why this note spells
+# them out in words rather than writing them). Brace-hash is the one that bites
+# in shell: a parameter expansion asking for an array length opens with exactly
+# that pair, reads as an unterminated Tera comment, and fails the whole task at
+# render time. Hence the explicit counter below instead of an array length.
+
+root="${MISE_PROJECT_ROOT:?mise did not set MISE_PROJECT_ROOT}"
+cd "${root}"
+
+new="${usage_new_name:?}"
+old="${usage_from:-$(basename "${root}")}"
+apply="${usage_apply:-}"
+
+# Validate BOTH names against the crates.io rule (leading letter, then
+# alphanumerics/dash/underscore, 64 max). This is not just input hygiene: the
+# accepted character class contains no sed metacharacter and no `/`, which is
+# what makes it safe to interpolate these strings straight into the s/// scripts
+# below with no escaping pass. Loosen the pattern and that stops being true.
+for candidate in "${old}" "${new}"; do
+  if ! [[ "${candidate}" =~ ^[A-Za-z][A-Za-z0-9_-]{0,63}$ ]]; then
+    echo "error: '${candidate}' is not a valid crate name" >&2
+    echo "       expected: a letter, then letters/digits/'-'/'_', 64 chars max" >&2
+    exit 1
+  fi
+done
+
+if [ "${old}" = "${new}" ]; then
+  echo "nothing to do: current name is already '${new}'"
+  exit 0
+fi
+
+# Three spellings, all mechanically derived so there is no second list to keep
+# in sync: kebab is the crate/repo name, snake is the Rust identifier Cargo
+# derives from it (`use my_crate::`), and SCREAMING is what build scripts and
+# env vars use. PascalCase is deliberately NOT rewritten - it is the one variant
+# a short new name can collide with in unrelated type names.
+#
+# The examples here are deliberately generic: naming the real project would make
+# this task rewrite its own comments on every run.
+to_snake() { printf '%s' "$1" | tr -- '-' '_'; }
+to_kebab() { printf '%s' "$1" | tr -- '_' '-'; }
+to_upper() { to_snake "$1" | tr '[:lower:]' '[:upper:]'; }
+
+# Order matters, and identity pairs must be dropped: see the sentinel comment
+# below for what these two rules together are protecting against.
+subs=()
+sub_count=0
+add_sub() {
+  [ "$1" != "$2" ] || return 0
+  local existing
+  for existing in ${subs[@]+"${subs[@]}"}; do
+    [ "${existing%%=*}" != "$1" ] || return 0
+  done
+  subs+=("$1=$2")
+  sub_count=$((sub_count + 1))
+}
+add_sub "$(to_upper "${old}")" "$(to_upper "${new}")"
+add_sub "$(to_snake "${old}")" "$(to_snake "${new}")"
+add_sub "$(to_kebab "${old}")" "$(to_kebab "${new}")"
+
+if [ "${sub_count}" -eq 0 ]; then
+  echo "error: '${old}' and '${new}' differ only in a spelling this task does not rewrite" >&2
+  exit 1
+fi
+
+# Chained `sed -e` expressions run in sequence over the SAME pattern space, so a
+# later expression can re-match an earlier one's output: renaming `a-b` -> `a_b`
+# would have the kebab rule produce `a_b`, which the snake rule then matches
+# again. Substituting to a sentinel first and only then to the final text makes
+# that feedback structurally impossible rather than merely unlikely.
+#
+# SOH/STX are the sentinels because they cannot appear in the files this task
+# edits - anything carrying control bytes is skipped as binary before it reaches
+# sed.
+soh=$'\001'
+stx=$'\002'
+sed_args=()
+old_alt=""
+index=0
+for sub in "${subs[@]}"; do
+  sed_args+=(-e "s/${sub%%=*}/${soh}${index}${stx}/g")
+  old_alt="${old_alt:+${old_alt}|}${sub%%=*}"
+  index=$((index + 1))
+done
+index=0
+for sub in "${subs[@]}"; do
+  sed_args+=(-e "s/${soh}${index}${stx}/${sub#*=}/g")
+  index=$((index + 1))
+done
+
+echo "rename: ${old} -> ${new}"
+for sub in "${subs[@]}"; do
+  echo "  ${sub%%=*} -> ${sub#*=}"
+done
+[ -n "${apply}" ] || echo "(preview - pass --apply to write)"
+echo
+
+# ---------------------------------------------------------------- file contents
+# The file set is `git ls-files` for one reason: it is exactly the set git can
+# put back. Every edit below is therefore undoable with `git restore`, which is
+# what makes running this without a commit safe. It also excludes target/, dist/
+# and the caches for free.
+#
+# Read with PLAIN grep, never `git grep`. `git grep -I` honours .gitattributes,
+# where this repo marks `Cargo.lock binary` - it would silently skip the one
+# lockfile that does carry the package name. Plain `grep -I` decides binary-ness
+# from content (NUL bytes), so it reads the lockfile as the text it is.
+edited=0
+occurrences=0
+while IFS= read -r -d '' file; do
+  # Symlinks first: this repo tracks four (the root LICENSE-* and their copies
+  # in each crate). Writing "in place" through a link follows it and replaces
+  # the LINK with a regular file, quietly undoing `licenses:link`.
+  [ -L "${file}" ] && continue
+  [ -f "${file}" ] || continue
+
+  hits=$( { grep -I -o -E "${old_alt}" "${file}" || true; } | wc -l | tr -d '[:space:]')
+  [ "${hits}" -gt 0 ] || continue
+
+  if [ -n "${apply}" ]; then
+    tmp=$(mktemp)
+    sed "${sed_args[@]}" "${file}" > "${tmp}"
+    # Write back THROUGH the original file. `mv "${tmp}" "${file}"` would carry
+    # mktemp's 0600 mode and a new inode onto a tracked file; truncating in
+    # place keeps the mode, the inode and anything watching the path.
+    cat "${tmp}" > "${file}"
+    rm -f "${tmp}"
+  fi
+
+  printf '  %-46s %3d occurrence(s)\n' "${file}" "${hits}"
+  edited=$((edited + 1))
+  occurrences=$((occurrences + hits))
+done < <(git ls-files -z)
+
+echo "  -- ${occurrences} occurrence(s) in ${edited} file(s)"
+echo
+
+# ------------------------------------------------------------------ path names
+# Every path component of every tracked file, deduplicated, so directories are
+# considered and not just leaf filenames. Deepest-first ordering means only the
+# LAST component of a path is ever rewritten, so renaming a parent can never
+# invalidate a child path still queued behind it.
+renamed=0
+while IFS= read -r path; do
+  [ -n "${path}" ] || continue
+
+  parent=$(dirname "${path}")
+  base=$(basename "${path}")
+  new_base=$(printf '%s' "${base}" | sed "${sed_args[@]}")
+  [ "${new_base}" != "${base}" ] || continue
+
+  if [ "${parent}" = "." ]; then new_path="${new_base}"; else new_path="${parent}/${new_base}"; fi
+
+  if [ -e "${new_path}" ]; then
+    echo "error: ${path} -> ${new_path} but that path already exists" >&2
+    exit 1
+  fi
+
+  # `git mv` rather than `mv`: it moves the file AND updates the index, so the
+  # rename shows up as a rename instead of a delete plus an untracked add.
+  [ -z "${apply}" ] || git mv "${path}" "${new_path}"
+  echo "  ${path} -> ${new_path}"
+  renamed=$((renamed + 1))
+done < <(
+  git ls-files -z \
+    | tr '\0' '\n' \
+    | awk -F/ '{ p = ""; for (i = 1; i <= NF; i++) { p = (i == 1 ? $i : p "/" $i); print p } }' \
+    | sort -u \
+    | grep -E "(^|/)[^/]*(${old_alt})[^/]*$" \
+    | awk -F/ '{ print NF "\t" $0 }' \
+    | sort -k1,1nr \
+    | cut -f2-
+)
+
+if [ "${renamed}" -eq 0 ]; then
+  echo "  -- no file or directory name contains '${old}'"
+else
+  echo "  -- ${renamed} path(s)"
+fi
+echo
+
+if [ "${edited}" -eq 0 ] && [ "${renamed}" -eq 0 ]; then
+  echo "error: '${old}' does not appear anywhere - wrong current name?" >&2
+  echo "       pass --from <old-name> if the repo directory is not it" >&2
+  exit 1
+fi
+
+# ------------------------------------------------------------------- follow-ups
+# Deliberately NOT automated: both live outside the tracked tree, so `git
+# restore` cannot undo them and the safety property of everything above would
+# not hold. Printed ready to paste instead.
+echo "not done automatically:"
+
+new_root="$(dirname "${root}")/$(basename "${root}" | sed "${sed_args[@]}")"
+if [ "${new_root}" != "${root}" ]; then
+  echo "  the repo directory itself (your shell's cwd would go stale):"
+  echo "      mv '${root}' '${new_root}'"
+fi
+
+remote=$(git remote get-url origin 2>/dev/null || true)
+if [ -n "${remote}" ]; then
+  new_remote=$(printf '%s' "${remote}" | sed "${sed_args[@]}")
+  if [ "${new_remote}" != "${remote}" ]; then
+    echo "  the origin remote (points at a repo that may not exist yet):"
+    echo "      git remote set-url origin '${new_remote}'"
+  fi
+fi
+
+# Untracked-but-not-ignored files are reported, never edited: git cannot restore
+# them, so a bad rename in one would be unrecoverable.
+untracked=$( { git ls-files --others --exclude-standard -z \
+  | xargs -0 grep -I -l -E "${old_alt}" 2>/dev/null || true; } | sed 's/^/      /')
+if [ -n "${untracked}" ]; then
+  echo "  these untracked files still mention '${old}' (not editable safely - git cannot restore them):"
+  printf '%s\n' "${untracked}"
+fi
+
+# Checklist item 2 in the root Cargo.toml is "`name`, and the directory name
+# itself". A member directory is named independently of its package, so a
+# mismatch survives any string rename and has to be checked structurally.
+for manifest in crates/*/Cargo.toml; do
+  [ -f "${manifest}" ] || continue
+  pkg=$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${manifest}" | head -1 \
+    | sed "${sed_args[@]}")
+  dir_name=$(basename "$(dirname "${manifest}")")
+  if [ -n "${pkg}" ] && [ "${pkg}" != "${dir_name}" ]; then
+    echo "  crates/${dir_name}/ holds package '${pkg}' - rename the directory if they should match:"
+    echo "      git mv 'crates/${dir_name}' 'crates/${pkg}'"
+  fi
+done
+
+echo
+if [ -n "${apply}" ]; then
+  echo "applied. verify, then commit yourself:"
+  echo "      cargo metadata --format-version 1 --no-deps > /dev/null && mise run publish:dry"
+  # `git restore --staged . && git restore .` is NOT sufficient and is not
+  # offered here. Unstaging a `git mv` turns the new path into an untracked copy
+  # that `git restore` then has no reason to touch, so the renamed directory is
+  # left behind next to the restored original. `reset --hard` resets the index
+  # too, and a path that is in the index but not in HEAD gets removed from the
+  # working tree - which is exactly the rename being undone.
+  echo "  to undo (resets the index too, so it also removes renamed paths;"
+  echo "  discards ALL uncommitted work, not just this rename):"
+  echo "      git reset --hard HEAD"
+else
+  echo "to apply:"
+  echo "      mise run rename ${new}${usage_from:+ --from ${old}} --apply"
+fi
+'''
+
+# Every published workspace member must carry its own licence texts: `cargo
+# package` collects only files UNDER the package root, so a crate that declares
+# `license = "MIT OR Apache-2.0"` but has no LICENSE-* of its own ships a licence
+# claim with no licence text. Symlinks are enough because Cargo dereferences
+# them when it builds the .crate tarball — the real bytes land in the archive
+# while git stores just the link.
+#
+# Run after adding a crate to crates/ (and any time the root licensing changes).
+[tasks."licenses:link"]
+description = "Symlink the root LICENSE-* files into every workspace crate"
+run = """
+set -eu
+
+cd "${MISE_PROJECT_ROOT:?mise did not set MISE_PROJECT_ROOT}"
+
+# The root LICENSE-* symlinks are the single source of truth for BOTH which
+# licences apply and the LICENSE-<ID> naming (LICENSES/MIT.txt -> LICENSE-MIT,
+# LICENSES/Apache-2.0.txt -> LICENSE-APACHE). This task only mirrors them
+# downwards, so adding a third licence at the root propagates on the next run
+# with no edit here. The `-L` guard means a plain file at the root is skipped
+# rather than copied blindly.
+linked=0
+for crate in crates/*/; do
+  [ -f "${crate}Cargo.toml" ] || continue
+
+  for link in LICENSE-*; do
+    [ -L "$link" ] || continue
+
+    # Root targets are repo-root-relative (`LICENSES/MIT.txt`) and crates sit
+    # exactly two levels down, so `../../` keeps the new link relative — an
+    # absolute one would break for every other clone of this repo.
+    target="../../$(readlink "$link")"
+    ln -sfn "$target" "${crate}${link}"
+
+    # -e follows the link: catches a root symlink that is itself dangling,
+    # which would otherwise propagate a broken link into every crate.
+    if [ ! -e "${crate}${link}" ]; then
+      echo "error: ${crate}${link} -> ${target} is dangling" >&2
+      exit 1
+    fi
+
+    echo "  ${crate}${link} -> ${target}"
+    linked=$((linked + 1))
+  done
+done
+
+if [ "$linked" -eq 0 ]; then
+  echo "error: nothing linked - no root LICENSE-* symlinks, or no crates with a Cargo.toml" >&2
+  exit 1
+fi
+
+echo "linked ${linked} licence file(s)"
+"""
+
+# The packaging half of the release flow — safe to run at any time, never
+# uploads. Builds every crate's .crate tarball, drops it in dist/ for
+# inspection, and runs Cargo's own publish checks.
+#
+# Know what --dry-run CANNOT tell you: ownership and version collision are
+# enforced by crates.io at upload time, so a dry run of an already-published
+# version merely warns ("already exists on crates.io index") and still exits 0.
+# That blind spot is exactly why `publish` below queries the registry itself.
+[tasks."publish:dry"]
+description = "Package every crate and run Cargo's publish checks - never uploads"
+dir = "{{ config_root }}"
+run = '''
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+rm -rf dist
+mkdir -p dist
+
+# --allow-dirty is UNCONDITIONAL here, and opt-in on `publish`. Cargo refuses to
+# package a dirty tree, which is right before an upload but would make this task
+# unusable for its actual job: inspecting what a release would contain while you
+# are still editing. Nothing here uploads, so a dirty tree is harmless.
+#
+# `publish` keeps cargo's check armed by default and makes you pass --allow-dirty
+# yourself, so shipping uncommitted code stays possible but never accidental.
+#
+# One packaging pass, not two: `cargo package --list` re-runs the whole
+# package+verify build just to enumerate the archive, so read the tarball
+# afterwards instead of paying for the build twice.
+cargo package --workspace --all-features --allow-dirty
+cp target/package/*.crate dist/
+
+for crate in dist/*.crate; do
+  echo "== ${crate}"
+  tar -tzf "${crate}" | sed 's|^[^/]*/|  |'
+done
+
+cargo publish --workspace --all-features --dry-run --allow-dirty
+'''
+
+# The irreversible half. crates.io is append-only: a version can never be
+# replaced or deleted, only yanked (which hides it from resolution but keeps it
+# downloadable forever). Run `mise run publish:dry` first.
+#
+# This template is used to RESERVE crate names on crates.io at 0.0.0 rather than
+# to ship releases, so "already published" is the expected steady state, not a
+# failure — the preflight below exits 0 in that case, keeping the task idempotent
+# so re-running it (or running it in a freshly cloned sibling repo) is harmless.
+#
+# Nothing in this task names a project: the crate list, versions and User-Agent
+# are all read from the manifest at run time, so it works unedited in any
+# workspace cloned from this template.
+[tasks.publish]
+description = "Publish every workspace crate to crates.io (IRREVERSIBLE)"
+dir = "{{ config_root }}"
+usage = '''
+arg "[cargo-args]" var=#true help="extra flags forwarded verbatim to cargo publish (e.g. --allow-dirty, --no-verify)"
+'''
+run = '''
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Flags forwarded verbatim to the final `cargo publish`, and to nothing else.
+# The preflight below talks to the crates.io HTTP API rather than to cargo, so
+# it keeps its own fail-closed behaviour no matter what is passed here - these
+# flags can loosen what cargo will upload, never whether the upload is checked.
+#
+# Known gap, since it is better stated than discovered: the preflight reasons
+# about the WHOLE workspace, so narrowing the upload with `-p <crate>` will not
+# narrow the check with it. In a multi-crate workspace where some names are
+# already taken, that combination trips the "partial claim" guard below.
+extra=()
+[ -z "${usage_cargo_args:-}" ] || read -ra extra <<< "${usage_cargo_args}"
+
+# Read the manifest ONCE and derive everything from it, so this task carries no
+# hardcoded project identity.
+meta=$(cargo metadata --format-version 1 --no-deps)
+
+# crates.io answers 403 to any request without a User-Agent, so this is not
+# optional decoration. It asks callers to identify themselves, hence the repo URL
+# pulled from the manifest rather than a bare tool name.
+repo=$(printf '%s' "${meta}" \
+  | jq -r '[.packages[].repository] | map(select(. != null)) | first // "unset"')
+UA="cargo-publish-preflight (+${repo})"
+
+# `publish != []` skips members marked `publish = false` (cargo metadata reports
+# null when publishable, [] when not), so dev-only harnesses never reach
+# crates.io.
+pkgs=$(printf '%s' "${meta}" \
+  | jq -r '.packages[] | select(.publish != []) | "\(.name) \(.version)"')
+
+total=0
+taken=0
+pending=""
+while read -r name version; do
+  [ -n "${name}" ] || continue
+  total=$((total + 1))
+
+  # Branch on the HTTP status, never on curl's exit code. This check must FAIL
+  # CLOSED: only a definitive 404 means "not published". Collapsing every
+  # non-success into "safe to publish" would wave a 403, a proxy error or a
+  # dropped connection straight through to an upload attempt.
+  # `|| code="000"` REASSIGNS on transport failure rather than appending to
+  # curl's own "000" output, which would otherwise report a garbled "HTTP
+  # 000000".
+  code=$(curl -sL -o /dev/null -w '%{http_code}' -H "User-Agent: ${UA}" \
+    "https://crates.io/api/v1/crates/${name}/${version}") || code="000"
+
+  case "${code}" in
+    200)
+      echo "  already on crates.io: ${name}@${version}"
+      taken=$((taken + 1))
+      ;;
+    404)
+      echo "  to publish:           ${name}@${version}"
+      pending="${pending}${name}@${version} "
+      ;;
+    *)
+      echo "error: crates.io returned HTTP ${code} for ${name}@${version}" >&2
+      echo "       cannot confirm publish state; refusing to guess" >&2
+      exit 1
+      ;;
+  esac
+done <<EOF
+${pkgs}
+EOF
+
+if [ "${total}" -eq 0 ]; then
+  echo "error: no publishable crates found" >&2
+  exit 1
+fi
+
+# Fully claimed — the steady state for a name-reservation repo. Idempotent
+# success beats a confusing "crate version already uploaded" from cargo.
+if [ "${taken}" -eq "${total}" ]; then
+  echo "nothing to do: all ${total} crate(s) already published at their current version"
+  exit 0
+fi
+
+# A partial claim can't be resolved by `--workspace` (cargo aborts on the first
+# duplicate), so surface it instead of half-publishing. Use `cargo publish -p
+# <crate>` for the stragglers.
+if [ "${taken}" -gt 0 ]; then
+  echo "error: ${taken}/${total} crate(s) already published; publish the rest individually with -p" >&2
+  echo "       pending: ${pending}" >&2
+  exit 1
+fi
+
+# Typed confirmation when a human is watching. Two subtleties, both learned the
+# hard way:
+#   * Prompt on /dev/tty, not stdin. mise runs task scripts with stdin detached,
+#     so `[ -t 0 ]` is always false here and a stdin-based prompt would be
+#     silently skipped in normal interactive use.
+#   * TEST by opening it, not with `[ -r /dev/tty ]`. That test passes even with
+#     no controlling terminal (CI, a daemon), and the open then fails with
+#     "Device not configured" -- taking the script down before the
+#     PUBLISH_CONFIRM fallback is ever consulted.
+if { true > /dev/tty; } 2>/dev/null; then
+  # Forwarded flags get their OWN line rather than being folded into the
+  # sentence. --allow-dirty means uncommitted code is about to ship and
+  # --no-verify means it was never built from the packaged tarball; the last
+  # screen before an irreversible upload is exactly where that has to be legible.
+  {
+    printf 'Publish %sto crates.io. This CANNOT be undone.\n' "${pending}"
+    [ -z "${usage_cargo_args:-}" ] || printf '  extra flags: %s\n' "${usage_cargo_args}"
+    printf 'Type "publish": '
+  } > /dev/tty
+  read -r reply < /dev/tty
+  [ "${reply}" = "publish" ] || { echo "aborted"; exit 1; }
+else
+  : "${PUBLISH_CONFIRM:?refusing to publish non-interactively; set PUBLISH_CONFIRM=1}"
+fi
+
+cargo publish --workspace --all-features ${extra[@]+"${extra[@]}"}
+
+mkdir -p dist
+cp target/package/*.crate dist/
+'''
+
+# Claims a name on crates.io and hands the repo back exactly as it was. Every
+# line of the body is an existing task, so what this adds is a sequence, a
+# precondition and a cleanup - no new mechanics.
+#
+# READ THIS BEFORE USING IT: the rename is REVERTED at the end. That is the point
+# - the template stays pristine so the next name can be claimed from it - but it
+# means `reserve` is the wrong task if you actually want to keep the new name.
+# For that, run `rename <name> --apply` and `publish` separately.
+#
+# Composed with `mise run` inside the script rather than with `depends`, because
+# `depends` is wrong on both counts that matter here:
+#
+#   * it runs its entries in PARALLEL, and this sequence is strictly ordered.
+#     Reaching the upload before the rename lands would claim the wrong name, and
+#     crates.io is append-only - a version can never be replaced, only yanked.
+#   * its entries are static config strings, so they cannot carry <new-name>,
+#     which only exists at run time.
+#
+# Sequencing then costs nothing: mise propagates a child task's exit code and
+# `set -e` stops on it, so a red build or test can never reach the publish step.
+[tasks.claim]
+alias = ["reserve"]
+description = "Claim a crates.io name: rename, verify, publish, then revert the rename"
+dir = "{{ config_root }}"
+usage = '''
+arg "<new-name>" help="crates.io name to claim (letter first, then A-Za-z0-9_-)"
+flag "--from <old-name>" help="current name to replace (default: the repo directory name)"
+flag "--allow-uncommitted" help="proceed even though the tree already has uncommitted changes"
+'''
+run = '''
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Child-task flags are REBUILT here, never forwarded from this task's own usage
+# variables. mise sets a flag to the string "true" rather than to its spelling,
+# and leaves it empty when absent - so passing "${usage_from:-}" straight through
+# hands the child either `true` or an empty word, and mise rejects both with
+# "unexpected word". Rebuilding is the only form that survives both states.
+from=()
+[ -z "${usage_from:-}" ] || from=(--from "${usage_from}")
+
+# This precondition carries the whole safety argument for the two destructive
+# steps below, so it is not merely tidiness:
+#   * the publish runs with --allow-dirty and ships the tree as it stands, so
+#     anything uncommitted here would be uploaded too - permanently.
+#   * the revert at the end is `git reset --hard`, which discards every
+#     uncommitted change it finds, not just the ones this task made.
+# Both are safe exactly when the tree starts clean, because then the only thing
+# present to publish or to discard is what this task itself did. After the rename
+# the tree is dirty BY CONSTRUCTION, so now is the only moment worth asking.
+if [ -z "${usage_allow_uncommitted:-}" ] && [ -n "$(git status --porcelain)" ]; then
+  echo "error: working tree has uncommitted changes" >&2
+  echo "       they would be published by --allow-dirty, then destroyed by the revert" >&2
+  echo "       commit or stash first, or pass --allow-uncommitted to accept both" >&2
+  exit 1
+fi
+
+# --apply is unconditional: performing the rename IS the job here. Run `rename`
+# on its own when the preview is what you want.
+mise run rename "${usage_new_name}" ${from[@]+"${from[@]}"} --apply
+
+# Compile gate before behaviour gate, so a rename that broke a manifest fails in
+# seconds rather than after a full test run.
+mise run build
+mise run test
+
+# --allow-dirty is REQUIRED here, not a convenience: the rename above leaves the
+# tree modified with its path renames staged and nothing committed, so cargo's
+# own clean-tree check would refuse. `publish` still runs its crates.io preflight
+# and still asks for typed confirmation before anything is uploaded.
+mise run publish --allow-dirty
+
+# Reached only on success - `set -e` means a failed step or a declined publish
+# exits above this line, deliberately leaving the renamed tree in place to be
+# inspected. Undo it by hand with the same command.
+#
+# `git restore --staged . && git restore .` would NOT do here: unstaging a
+# `git mv` turns the new path into an untracked copy that `git restore` has no
+# reason to touch, leaving the renamed directory sitting next to the restored
+# original. `reset --hard` resets the index too, and a path that is in the index
+# but not in HEAD is removed from the working tree - which is the rename undone.
+echo
+echo "published. reverting the rename so the template is reusable..."
+git reset --hard HEAD
+echo "tree restored to HEAD; '${usage_new_name}' is now claimed on crates.io"
+'''

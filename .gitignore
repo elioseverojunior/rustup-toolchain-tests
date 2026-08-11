@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Elio Severo Junior <elioseverojunior@gmail.com>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+### Rust
+# Cargo Ignores
+/target
+
+# Cargo Package
+**/dist
+
+# Cargo Vet
+**/.cargo-vet

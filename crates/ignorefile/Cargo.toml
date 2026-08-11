@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Elio Severo Junior <elioseverojunior@gmail.com>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# `name` is the ONE package field that cannot be inherited from
+# `[workspace.package]` — members must be uniquely named. Everything else is
+# pulled from the workspace so version/licence/MSRV live in a single place.
+[package]
+name = "rust-workspaced"
+authors.workspace = true
+categories.workspace = true
+description.workspace = true
+documentation.workspace = true
+edition.workspace = true
+# `exclude` and `readme` resolve relative to the WORKSPACE root when inherited,
+# so the root README.md and the root-relative ignore globs both apply here.
+exclude.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+# Binds this member to `[workspace.lints.*]`. Without it the workspace lint
+# tables are inert — they are inheritance sources, not global settings.
+[lints]
+workspace = true
+
+[dependencies]
+
+# Consumed by build.rs to stamp BUILD_TIMESTAMP into the compiled artifact.
+# Build-dependencies inherit from `[workspace.dependencies]` — there is no
+# separate `[workspace.build-dependencies]` table in Cargo.
+[build-dependencies]
+chrono.workspace = true
+
+# docs.rs reads `package.metadata.docs.rs` from the PUBLISHED crate; it never
+# looks at `[workspace.metadata]`, so this has to live in the member manifest.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = [
+  "--generate-link-to-definition",
+  "--cfg",
+  "docsrs",
+  "--document-private-items",
+]
+targets = ["x86_64-unknown-linux-gnu"]

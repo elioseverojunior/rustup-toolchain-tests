@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: Elio Severo Junior <elioseverojunior@gmail.com>
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Supply chain security policy for this workspace.
+# Dependencies are audited and kept deliberately minimal. Nothing below names
+# the project — crate-family references use `*-` globs — so this file drops into
+# any workspace in this template unchanged.
+
+# ==============================================================================
+# License Management
+# ==============================================================================
+
+[licenses]
+# Only allow licenses compatible with this workspace's dual MIT OR Apache-2.0
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "Unicode-3.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+]
+
+confidence-threshold = 0.8
+
+# Don't warn that permissive licenses in `allow` above (BSD-2/3-Clause, ISC,
+# Zlib, …) aren't present in the current, near-empty dependency graph: the
+# allowlist is intentionally forward-looking, so unused entries are expected
+# until real deps land. (This silences `license-not-encountered`.)
+unused-allowed-license = "allow"
+
+# libfuzzer-sys wraps LLVM's libFuzzer, so it is `(MIT OR Apache-2.0) AND NCSA`
+# — the NCSA term is not satisfiable by choosing a side of the OR, and cargo-deny
+# rejects the whole expression on it. NCSA is OSI-approved and FSF Free/Libre,
+# and this crate reaches only the `*-fuzz` member, a `publish = false` harness that
+# ships in no release artifact. Scoped as a per-crate exception rather than
+# added to `allow` above, so NCSA stays rejected everywhere else.
+[[licenses.exceptions]]
+allow = ["NCSA"]
+crate = "libfuzzer-sys"
+
+# ==============================================================================
+# Security Advisories — Vulnerability Management
+# ==============================================================================
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+
+# No ignored advisories — zero tolerance for known vulnerabilities
+ignore = []
+
+# ==============================================================================
+# Banned Dependencies — Supply Chain Security
+# ==============================================================================
+
+[bans]
+# Deny multiple versions — a library must not force version conflicts downstream
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+
+deny = []
+
+# Skip duplicate version checks for transitive deps brought in by dev-dependencies
+skip = []
+
+# Benchmark-only comparison crates (future dev-deps of a `*-bench` member).
+# Their transitive trees would be exempt from the multiple-versions check — they
+# are NEVER in the shipped library graph. Kept empty until such a member exists,
+# otherwise cargo-deny warns `unmatched-skip-root` for crates not in the graph.
+# When it lands, list the competing implementations here as
+# `{ crate = "..." }` roots.
+skip-tree = []
+
+# ==============================================================================
+# Source Control — Repository Security
+# ==============================================================================
+
+[sources]
+# Deny unknown sources — all deps must come from crates.io
+unknown-registry = "deny"
+unknown-git = "deny"
+
+allow-git = []
+
+# crates.io — cargo-deny normalizes the registry to this canonical identifier
+# regardless of the sparse/git protocol, so this single entry covers it (the
+# bare `https://index.crates.io` form never matched → `unmatched-source`).
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

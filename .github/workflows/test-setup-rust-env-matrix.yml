@@ -83,7 +83,7 @@ jobs:
 
       - name: Setup Rust Toolchain And Cache
         id: rust-toolchain
-        uses: elioseverojunior/rust-toolchain@ 03150c718cfa2a2689f3dbb992d6b814a7e1c0b0
+        uses: elioseverojunior/rust-toolchain@03150c718cfa2a2689f3dbb992d6b814a7e1c0b0 # v0.6.0-71
         with:
           toolchain: ${{ matrix.toolchain }}
           targets: ${{ matrix.targets }}

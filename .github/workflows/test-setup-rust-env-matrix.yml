@@ -89,11 +89,24 @@ jobs:
           targets: ${{ matrix.targets }}
           components: ${{ matrix.components }}
           profile: ${{ matrix.profile }}
-          # There is no Cargo.lock in this repository, and hashFiles returns an
-          # empty string for a glob matching nothing — which the action rejects.
-          # Any real lockfile hash exercises the same code path.
           cache: true
-          cache-key-hash: ${{ hashFiles('bun.lock') }}
+          # `hashFiles` globs the workspace, and this job never checks out on
+          # purpose: the repo's `.cargo/config.toml` pins `-fuse-ld=mold` for
+          # x86_64-unknown-linux-gnu, which every `cargo install` behind
+          # `cargo-tools` would inherit and fail on, mold not being installed
+          # here. So the tracked Cargo.lock is on the branch but never on disk.
+          # The `bun.lock` this used to name matched nothing for a second reason
+          # on top of that: it is a file in the *action's* repository, not this
+          # one. hashFiles returns "" for a glob matching nothing, and "" is the
+          # single value the action rejects outright — it took the job down
+          # before the toolchain was even installed.
+          #
+          # The toml written two steps above is the only file this job puts in
+          # the workspace, so it is the only glob that can answer here;
+          # `github.sha` backstops the `toml: none` row that write step's `if`
+          # allows. Any non-empty hash exercises the same code path — the action
+          # only ever concatenates this into a key.
+          cache-key-hash: ${{ hashFiles('rust-toolchain.toml') || github.sha }}
           cache-key-suffix: act
           cargo-tools: ${{ matrix.cargo-tools }}
 
@@ -103,12 +116,21 @@ jobs:
         # also the only place the README's `restore-keys` expression is ever
         # evaluated by a real runner, and its block scalar must keep both lines
         # at identical indentation or the join separator gains leading spaces.
+        #
+        # `|| '{}'` is not defensive padding, it is what keeps a failure
+        # readable. A step's `env:` block is evaluated when the runner reaches
+        # the step, independently of whether the step will run, so a bare
+        # `fromJSON(<empty output>)` aborts the job with "Error reading JToken
+        # from JsonReader. Path '', line 0, position 0" — a message that names
+        # this file and says nothing about the action step that actually died.
+        # Falling back to an empty object lets the emptiness reach the `-z`
+        # checks below, which say which key is missing.
         env:
           CACHE_JSON: ${{ steps.rust-toolchain.outputs.cache }}
-          REGISTRY_KEY: ${{ fromJSON(steps.rust-toolchain.outputs.cache).layers.registry.key }}
-          BUILD_KEY: ${{ fromJSON(steps.rust-toolchain.outputs.cache).layers.build.key }}
+          REGISTRY_KEY: ${{ fromJSON(steps.rust-toolchain.outputs.cache || '{}').layers.registry.key }}
+          BUILD_KEY: ${{ fromJSON(steps.rust-toolchain.outputs.cache || '{}').layers.build.key }}
           REGISTRY_RESTORE_KEYS: |
-            ${{ join(fromJSON(steps.rust-toolchain.outputs.cache).layers.registry.restoreKeys, '
+            ${{ join(fromJSON(steps.rust-toolchain.outputs.cache || '{}').layers.registry.restoreKeys, '
             ') }}
         run: |
           echo "cache: $CACHE_JSON"
@@ -192,10 +214,17 @@ jobs:
         # 1.88, but only the first is the documented contract: a toml whose
         # channel is ignored must still contribute its targets, components and
         # profile, and it cannot do that if it was skipped outright.
+        #
+        # `|| '{}'` for the same reason as the cache step, and this is where the
+        # need was demonstrated rather than argued: on the `1.97 with toml
+        # config` row `matrix.unexpected` is empty, so the `if` above is false —
+        # and the step still failed the job, because the runner had already
+        # evaluated this `env:` block. An `if:` does not guard the expressions
+        # beneath it.
         env:
           RESOLVED: ${{ steps.rust-toolchain.outputs.toolchain }}
-          FROM_INPUT: ${{ fromJSON(steps.rust-toolchain.outputs.json).inputs.toolchain }}
-          FROM_TOML: ${{ fromJSON(steps.rust-toolchain.outputs.json).toml.channel }}
+          FROM_INPUT: ${{ fromJSON(steps.rust-toolchain.outputs.json || '{}').inputs.toolchain }}
+          FROM_TOML: ${{ fromJSON(steps.rust-toolchain.outputs.json || '{}').toml.channel }}
           EXPECTED: ${{ matrix.expected }}
           UNEXPECTED: ${{ matrix.unexpected }}
         run: |
@@ -258,9 +287,13 @@ jobs:
             echo "  present: $tool"
           done
 
-          # An unresolvable crate degrades to UNRESOLVED_VERSION rather than
+          # An unresolvable crate is published as `<name>@unknown` rather than
           # throwing, so a registry outage would otherwise pass silently here.
-          if [[ "$RESOLVED" == *UNRESOLVED_VERSION* ]]; then
+          # This read `UNRESOLVED_VERSION` until now — a marker the action does
+          # not emit under any input, which made the check unfireable: it was
+          # asserting nothing while reading as the guard against exactly the
+          # failure it could not see.
+          if [[ "$RESOLVED" == *"@unknown"* ]]; then
             echo "a tool version never resolved: $RESOLVED"
             exit 1
           fi

@@ -371,7 +371,11 @@ jobs:
       - name: Assert action outputs are populated
         env:
           RUST_VERSION: ${{ steps.rust-version.outputs.version }}
-          CACHE_KEY: ${{ steps.cache-names.outputs.cache-key }}
+          # Upstream's `cachekey`, not the local `cache-names` string: that one is
+          # computed by a shell step in this file and is non-empty whether or not
+          # caching works, so asserting on it could never detect the failure its
+          # message names. This one is empty unless `cache: true` took effect.
+          CACHE_KEY: ${{ steps.rust-toolchain.outputs.cachekey }}
           CACHE_HIT: ${{ steps.rust-toolchain.outputs.cache-hit }}
         run: |
           set -Eeuo pipefail

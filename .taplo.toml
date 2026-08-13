@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
+exclude = ["target/**"]
+
 [formatting]
 # taplo pads trailing comments into a column, cargo-sort emits a single space,
 # and each rewrites what the other just wrote -- so `cargo:sort:check` and

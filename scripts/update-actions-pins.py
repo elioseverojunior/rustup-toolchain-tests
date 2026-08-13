@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 
-# SPDX-FileCopyrightText: Glaucus contributors
+# SPDX-FileCopyrightText: Elio Severo Junior <elioseverojunior@gmail.com>
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 

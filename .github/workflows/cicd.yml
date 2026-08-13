@@ -129,6 +129,7 @@ jobs:
   # `runs-on` input on the callee passed through `with:`, not a key here.
   sast:
     name: SAST
+    needs: [setup, version]
     permissions:
       security-events: write
       actions: read

@@ -148,7 +148,7 @@ jobs:
     name: MSRV
     # First tier, alongside `lint`/`sast`, rather than downstream of them: this
     # is one `cargo check`, and a broken floor should surface in three minutes
-    # instead of behind the full test-and-build chain.    
+    # instead of behind the full test-and-build chain.
     needs: [setup, version, lint, sast]
     runs-on: ${{ vars.RUNS_ON_ARM64 || vars.RUNS_ON || 'ubuntu-latest' }}
     permissions:

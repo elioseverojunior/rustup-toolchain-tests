@@ -477,21 +477,49 @@ jobs:
         run: |
           set -eo pipefail
 
-          mapfile -t BINS < <(cargo metadata --format-version 1 --no-deps \
+          # Assigned FIRST, then queried -- not read straight from a process
+          # substitution. `mapfile -t ARR < <(cmd)` discards cmd's exit status
+          # entirely, so a failing `cargo metadata` would surface as an empty
+          # list, which the library-workspace branch below would then report as
+          # a clean skip. Under `set -e` a failed command substitution in an
+          # assignment does abort. One invocation also serves both queries.
+          METADATA="$(cargo metadata --format-version 1 --no-deps)"
+
+          # Every bin target, BEFORE the publish filter. The two reasons the
+          # publishable list can come back empty need telling apart, and only
+          # this unfiltered count separates them.
+          mapfile -t ALL_BINS < <(printf '%s' "${METADATA}" \
+            | jq -r '.packages[].targets[]
+                     | select(.kind[] == "bin") | .name' | sort -u)
+
+          mapfile -t BINS < <(printf '%s' "${METADATA}" \
             | jq -r '.packages[] | select(.publish != []) | .targets[]
                      | select(.kind[] == "bin") | .name' | sort -u)
 
+          # A workspace with no bin targets AT ALL is a library, and a library
+          # has nothing to smoke-test. This one is: `rustup-toolchain-tests`
+          # ships a single lib plus its build script. The unconditional `exit 1`
+          # that used to stand here came from a workspace that always had the
+          # `glaucus` binary, where an empty list really did mean something had
+          # broken -- transplanted unchanged, it failed this repository on its
+          # correct and permanent state.
+          if [ "${#ALL_BINS[@]}" -eq 0 ]; then
+            echo "::notice::no bin targets in this workspace; nothing to smoke-test"
+            exit 0
+          fi
+
+          # Bins exist but every one is `publish = false`. That is NOT a library
+          # workspace, it is a metadata mistake -- a release artefact silently
+          # demoted -- so the original fail-closed behaviour is kept for exactly
+          # this case, which is what it was always guarding against.
           if [ "${#BINS[@]}" -eq 0 ]; then
-            echo "::error::no publishable bin targets found; smoke test would be a no-op"
+            echo "::error::this workspace declares bin targets (${ALL_BINS[*]}) but none are publishable; a release artefact has probably been marked publish = false by mistake"
             exit 1
           fi
 
-          # Only one shape of binary as of Task 13: `lsp` and `mcp` (the old
-          # stdio servers that blocked on stdin with no flags at all) are now
-          # `glaucus lsp` / `glaucus mcp` subcommands of the single `glaucus`
-          # binary, which clap answers at the top level with `--help` before
-          # any subcommand dispatch runs -- so a plain `--help` is safe for
-          # every publishable bin target, with no per-binary special-casing.
+          # `--help` with no per-binary special-casing: clap answers it at the
+          # top level before any subcommand dispatch runs, so a binary that
+          # would otherwise block on stdin still returns promptly.
           for BIN in "${BINS[@]}"; do
             echo "::group::${BIN}"
 

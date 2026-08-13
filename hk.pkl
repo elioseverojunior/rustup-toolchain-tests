@@ -1,0 +1,162 @@
+// SPDX-FileCopyrightText: Elio Severo Junior <elioseverojunior@gmail.com>
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+// The config `hk check --all` reads. cicd.yml's Lint job runs exactly that, and
+// until this file existed it failed twice over: mise had no [tools] table, so
+// `hk` never reached PATH (exit 127, `hk: command not found`), and hk with no
+// config falls back to a default that defines no `check` hook at all -- so even
+// an installed hk would have answered `Error: Hook 'check' not found`.
+//
+// Every step below invokes its linter DIRECTLY rather than through a
+// `mise run <task>` indirection. The sibling repository this project's
+// `.github/` was transplanted from routes each one through a task, which is
+// worth doing when a task already exists for local use; here none of them do,
+// so the indirection would mean writing ~15 tasks whose only caller is this
+// file. The tools themselves are pinned in mise.toml's [tools].
+amends "package://github.com/jdx/hk/releases/download/v1.55.0/hk@1.55.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v1.55.0/hk@1.55.0#/Builtins.pkl"
+
+local linters = new Mapping<String, Step> {
+    // Self-contained: `hk util` is hk's own built-in implementation of the
+    // pre-commit-hooks classics, so these need nothing installed beyond hk.
+    ["check-added-large-files"] = new Step {
+        glob = "**"
+        check = "hk util check-added-large-files {{ files }}"
+    }
+    ["check-merge-conflict"] = new Step {
+        glob = "**"
+        check = "hk util check-merge-conflict {{ files }}"
+    }
+    ["check-case-conflict"] = new Step {
+        glob = "**"
+        check = "hk util check-case-conflict {{ files }}"
+    }
+    ["check-symlinks"] = new Step {
+        glob = "**"
+        check = "hk util check-symlinks {{ files }}"
+    }
+    ["check-executables-have-shebangs"] = new Step {
+        glob = "**"
+        check = "hk util check-executables-have-shebangs {{ files }}"
+    }
+    ["check-byte-order-marker"] = new Step {
+        glob = "**"
+        check = "hk util check-byte-order-marker {{ files }}"
+    }
+    ["trailing-whitespace-fixer"] = new Step {
+        glob = "**"
+        check = "hk util trailing-whitespace --diff {{ files }}"
+        fix = "hk util trailing-whitespace --fix {{ files }}"
+    }
+    ["end-of-file-fixer"] = new Step {
+        glob = "**"
+        check = "hk util end-of-file-fixer --diff {{ files }}"
+        fix = "hk util end-of-file-fixer --fix {{ files }}"
+    }
+    ["mixed-line-ending-fixer"] = new Step {
+        glob = "**"
+        check = "hk util mixed-line-ending --diff {{ files }}"
+        fix = "hk util mixed-line-ending --fix {{ files }}"
+    }
+
+    // Reads .gitleaks.toml.
+    ["gitleaks"] = Builtins.gitleaks
+
+    // Workflows only. actionlint parses `.github/workflows/*.yml`; the composite
+    // actions under `.github/actions/*/action.yml` are a different schema it
+    // does not lint, so globbing them in would report nothing either way.
+    ["actionlint"] = new Step {
+        glob = ".github/workflows/*.{yml,yaml}"
+        check = "actionlint {{ files }}"
+    }
+
+    // RUST_LOG is pinned to error because taplo logs its config discovery and
+    // full file list to stderr at INFO, which hk surfaces as though the step had
+    // complained. Formatting rules live in .taplo.toml.
+    ["taplo"] = new Step {
+        glob = "*.toml"
+        check = "RUST_LOG=error taplo fmt --check --diff {{ files }}"
+        fix = "RUST_LOG=error taplo fmt {{ files }}"
+    }
+
+    // Reads .rumdl.toml.
+    ["rumdl"] = new Step {
+        glob = "*.md"
+        check = "rumdl check {{ files }}"
+        fix = "rumdl check --fix {{ files }}"
+    }
+
+    // Per-file, via comply's own `lint-file`, so the cost scales with the change
+    // rather than with the repository. The project-wide questions `lint-file`
+    // cannot answer -- unused licences, LICENSES/ hygiene -- are what
+    // `comply lint` covers, and that belongs in a release gate rather than on
+    // every commit.
+    //
+    // comply is not in mise.toml's [tools]: it arrives through
+    // `.github/actions/setup-rust-env`'s `cargo-tools` input, which is also what
+    // puts it under rust-toolchain's `bin` cache layer.
+    ["comply"] = new Step {
+        glob = "**"
+        check = "comply lint-file {{ files }}"
+    }
+
+    // Whole-workspace, so no `{{ files }}`: rustfmt and clippy are cheap here
+    // (two source files) and a partial invocation cannot see a cross-module
+    // lint. `-D warnings` is passed explicitly even though .cargo/config.toml
+    // already sets it in rustflags -- that file scopes it per target triple, and
+    // this must hold on every host.
+    ["fmt-check"] = new Step {
+        glob = "*.rs"
+        check = "cargo fmt --all -- --check"
+        fix = "cargo fmt --all"
+    }
+    ["clippy"] = new Step {
+        glob = "*.rs"
+        check = "cargo clippy --all-targets --all-features -- -D warnings"
+    }
+
+    // Reads deny.toml. `check` with no argument runs all four -- advisories,
+    // bans, licenses, sources -- which is why there is no separate cargo-audit
+    // step: its advisory database is the same one cargo-deny's `advisories`
+    // check reads, so a second tool would buy a second install and no coverage.
+    ["deny"] = new Step {
+        glob = "{Cargo.lock,Cargo.toml,**/Cargo.toml,deny.toml}"
+        check = "cargo deny check"
+    }
+}
+
+hooks {
+    ["pre-commit"] {
+        fix = true
+        stash = "git"
+        steps = linters
+    }
+
+    ["pre-commit:all"] {
+        fix = true
+        stash = "git"
+        steps = linters
+    }
+
+    // What CI runs, as `hk check --all`.
+    ["check"] {
+        steps = linters
+    }
+
+    ["fix"] {
+        fix = true
+        steps = linters
+    }
+
+    // Reads committed.toml.
+    ["commit-msg"] {
+        steps {
+            ["committed"] = new Step {
+                check = "committed --commit-file {{ files }}"
+            }
+        }
+    }
+
+    ["post-commit"] {}
+}

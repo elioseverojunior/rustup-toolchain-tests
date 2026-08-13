@@ -425,9 +425,9 @@ jobs:
       # are immutable, so that strands a release permanently half-applied.
       #
       # `cargo search` is the wrong instrument for this: it is a PREFIX search,
-      # so `cargo search glaucus` also matches glaucus-core, and the grep could
-      # report a sibling's version as this crate's. The sparse index is an exact
-      # per-crate lookup.
+      # so searching `foo` also matches `foo-core` and `foo-derive`, and the
+      # grep could report a sibling's version as this crate's. The sparse index
+      # is an exact per-crate lookup.
       #
       # The logic lives in mise.toml, not in this file and not in a
       # .github/scripts/ helper: mise.toml is the single source of truth for this
@@ -601,10 +601,10 @@ jobs:
             # ONLY a rate limit is worth waiting out. Every failure used to be
             # assumed to be one, so a permanent error burned the full
             # 12 x 630s -- two hours and six minutes -- while the log claimed
-            # "rate limit expected" at every step. That is exactly what happened
-            # when `glaucus-cli` could not resolve `glaucus` with feature `cli`
-            # against the registry: a manifest problem no amount of waiting
-            # fixes, reported as a throttle.
+            # "rate limit expected" at every step. The failure that exposed it
+            # was a member crate that could not resolve a sibling's optional
+            # feature against the registry: a manifest problem no amount of
+            # waiting fixes, reported as a throttle.
             if ! grep -qiE 'too many requests|rate limit|429|try again (later|in [0-9])' /tmp/publish-attempt.log; then
               echo "::error::cargo publish failed for a reason that waiting will not fix (no rate-limit signal in its output). See the error in the attempt ${ATTEMPT} group above."
               exit 1

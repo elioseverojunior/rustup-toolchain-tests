@@ -441,22 +441,24 @@ jobs:
         run: |
           set -eo pipefail
 
-          # `--all-features` is load-bearing, not belt-and-braces. The `glaucus`
-          # bin declares `required-features = ["cli"]` and `cli` is NOT in that
-          # crate's `default`, so a plain `--workspace` build silently skips it
-          # -- cargo does not warn, it just produces no binary. The smoke test
-          # below derives its list from `cargo metadata`, which reports EVERY bin
-          # target regardless of feature gating, so the two disagreed and the job
-          # died on `./target/release/glaucus: No such file or directory` (127).
+          # `--all-features` is load-bearing rather than belt-and-braces, and
+          # the reason is a disagreement between two views of the same
+          # workspace. `cargo metadata` reports EVERY bin target regardless of
+          # feature gating, and the smoke test below derives its list from
+          # exactly that -- so a bin whose `required-features` are not in its
+          # crate's `default` is reported here but skipped by a plain
+          # `--workspace` build. Cargo does not warn about the skip, it simply
+          # produces no binary, and the smoke test then dies on a path that does
+          # not exist (exit 127).
           #
           # Building all features keeps the invariant the smoke test assumes --
           # "every bin cargo metadata reports has been built" -- true by
-          # construction, including for any future feature-gated binary. Safe
-          # here because `glaucus` is the only crate with features and they are
-          # purely additive (ast/cst/serde/schema/cli), with no mutually
-          # exclusive pair to resolve. `--locked` still holds: the optional CLI
-          # dependencies (clap, anstream, tracing-subscriber, ...) are already
-          # pinned in Cargo.lock.
+          # construction. This workspace declares no features at all today, so
+          # the flag changes nothing now; it is here so that adding a
+          # feature-gated binary later cannot reintroduce the mismatch.
+          #
+          # `--locked` still holds alongside it: enabling a feature can only
+          # activate optional dependencies, which Cargo.lock already pins.
           echo "::group::cargo build --release --all-features"
           cargo build --release --locked --workspace --all-features
           echo "::endgroup::"
@@ -467,12 +469,14 @@ jobs:
       # fail to start while every test passes.
       #
       # The binary list is DISCOVERED from cargo metadata rather than written out
-      # here. This step previously named a single binary as a literal string,
-      # which is how it survived the rename to `glaucus` untouched and broke: a
-      # stale name in a shell string is invisible to cargo, clippy and rustfmt.
-      # Deriving it means adding or renaming a binary can never leave this step
-      # behind again. `select(.publish != [])` keeps the fuzz harnesses out --
-      # they are `publish = false` and are not release artefacts.
+      # here. An earlier version named a single binary as a literal string and
+      # so survived a project rename untouched, then broke on the next run: a
+      # stale name in a shell string is invisible to cargo, clippy and rustfmt,
+      # which is why nothing caught it. Deriving the list means adding or
+      # renaming a binary can never leave this step behind again -- a property
+      # this repository has since exercised, renaming its one crate with no edit
+      # needed here. `select(.publish != [])` drops `publish = false` members:
+      # those are dev-only harnesses, not release artefacts.
       - name: Smoke-test the release binaries
         shell: bash -l {0}
         run: |
@@ -500,10 +504,10 @@ jobs:
           # A workspace with no bin targets AT ALL is a library, and a library
           # has nothing to smoke-test. This one is: `rustup-toolchain-tests`
           # ships a single lib plus its build script. The unconditional `exit 1`
-          # that used to stand here came from a workspace that always had the
-          # `glaucus` binary, where an empty list really did mean something had
-          # broken -- transplanted unchanged, it failed this repository on its
-          # correct and permanent state.
+          # that used to stand here came from the workspace this `.github/` was
+          # transplanted from, which always shipped a binary and where an empty
+          # list really did mean something had broken. Carried over unchanged,
+          # it failed this repository on its correct and permanent state.
           if [ "${#ALL_BINS[@]}" -eq 0 ]; then
             echo "::notice::no bin targets in this workspace; nothing to smoke-test"
             exit 0

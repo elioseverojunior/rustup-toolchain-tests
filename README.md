@@ -4,10 +4,10 @@ SPDX-FileCopyrightText: Elio Severo Junior <elioseverojunior@gmail.com>
 SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
-# rust-workspaced
+# rustup-toolchain-tests
 
-[![crates.io](https://img.shields.io/crates/v/rust-workspaced.svg)](https://crates.io/crates/rust-workspaced)
-[![docs.rs](https://docs.rs/rust-workspaced/badge.svg)](https://docs.rs/rust-workspaced)
+[![crates.io](https://img.shields.io/crates/v/rustup-toolchain-tests.svg)](https://crates.io/crates/rustup-toolchain-tests)
+[![docs.rs](https://docs.rs/rustup-toolchain-tests/badge.svg)](https://docs.rs/rustup-toolchain-tests)
 [![license: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
 
 Generate `.gitignore` files from a declarative TOML specification.
@@ -27,14 +27,14 @@ remembers which tool needed `**/.cargo-vet` or whether `/target` is still load
 bearing, and the same block gets copy-pasted between repositories where it
 slowly drifts out of sync.
 
-`rust-workspaced` treats the file as generated output. Patterns live in TOML with the
+`rustup-toolchain-tests` treats the file as generated output. Patterns live in TOML with the
 reasoning attached, grouped into named sections, and the `.gitignore` is
 rendered from that — so the source of truth is reviewable and the output is
 reproducible.
 
 ## How it works
 
-Describe the sections and rules in `rust-workspaced.toml`:
+Describe the sections and rules in `rustup-toolchain-tests.toml`:
 
 ```toml
 version = 1

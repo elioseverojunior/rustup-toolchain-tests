@@ -11,7 +11,7 @@ categories.workspace = true
 description.workspace = true
 documentation.workspace = true
 edition.workspace = true
-name = "rust-workspaced"
+name = "rustup-toolchain-tests"
 # `exclude` and `readme` resolve relative to the WORKSPACE root when inherited,
 # so the root README.md and the root-relative ignore globs both apply here.
 exclude.workspace = true

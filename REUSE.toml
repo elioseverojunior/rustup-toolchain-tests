@@ -6,8 +6,8 @@
 # `comply` regenerates the per-file headers from the copyright field, so change
 # it here rather than hand-editing headers. See the PER-PROJECT note in
 # Cargo.toml for the full list of places identity lives.
-SPDX-PackageDownloadLocation = "https://github.com/elioseverojunior/rust-workspaced"
-SPDX-PackageName = "rust-workspaced"
+SPDX-PackageDownloadLocation = "https://github.com/elioseverojunior/rustup-toolchain-tests"
+SPDX-PackageName = "rustup-toolchain-tests"
 SPDX-PackageSupplier = "Elio Severo Junior <elioseverojunior@gmail.com>"
 version = 1
 

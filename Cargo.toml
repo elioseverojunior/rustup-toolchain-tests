@@ -34,12 +34,12 @@ resolver = "3"
 authors = ["Elio Severo Junior <elioseverojunior@gmail.com>"]
 categories = ["development-tools", "config"]
 description = "Generate .gitignore files from a declarative TOML specification."
-documentation = "https://docs.rs/rust-workspaced"
+documentation = "https://docs.rs/rustup-toolchain-tests"
 edition = "2024"
 keywords = ["gitignore", "git", "codegen", "toml", "config"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/elioseverojunior/rust-workspaced"
+repository = "https://github.com/elioseverojunior/rustup-toolchain-tests"
 rust-version = "1.88"
 version = "0.0.0"
 

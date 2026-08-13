@@ -373,10 +373,14 @@ jobs:
           fi
 
       # Uploads unless a runner declares it cannot. GitHub sets no such variable,
-      # so this runs there as it always has; `mise run act:setup` writes
-      # `UPLOAD_ARTIFACTS=false` into `.act/.vars`, because act's artifact server
-      # rejects a field upload-artifact v7 sends and fails a run that otherwise
-      # passed. That task carries the full explanation.
+      # so this always runs there; the escape hatch exists for `act`, whose
+      # artifact server rejects a field upload-artifact v7 sends and fails a run
+      # that otherwise passed. Setting `UPLOAD_ARTIFACTS=false` in act's vars
+      # skips the step. The source repository generated that file from a
+      # `mise run act:setup` task, which is deliberately NOT ported: this
+      # repository has no act configuration at all (no .actrc, no .act/), so the
+      # task would be machinery with nothing to configure. Add both together if
+      # local act runs are ever wanted here.
       - name: Upload coverage artifact
         if: ${{ always() && vars.UPLOAD_ARTIFACTS != 'false' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

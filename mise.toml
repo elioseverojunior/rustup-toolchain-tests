@@ -1089,3 +1089,185 @@ comply "${args[@]}"
 '''
 shell = "bash -c"
 usage = 'arg "[args]" var=#true help="comply subcommand + flags; defaults to `lint` when omitted"'
+
+# Force-refresh tags so GitVersion sees the graph CI sees. Every version answer
+# routes through `version:json`, so refreshing at this one point makes all of
+# them correct by construction rather than each remembering to do it.
+[tasks."git:tags:fetch"]
+alias = []
+description = "Force-refresh tags from origin so GitVersion sees the graph CI sees"
+hide = true
+run = '''
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+git remote get-url origin >/dev/null 2>&1 || exit 0
+
+# `--force` is the whole point: without it git leaves an existing tag alone and
+# the refresh is a no-op precisely when it matters.
+git fetch --tags --force --quiet origin 2>/dev/null || {
+    echo "version: could not reach origin; tags may be stale and the computed version wrong" >&2
+    exit 0
+}
+'''
+shell = "bash -c"
+
+# The shape version.yml documents as "the same shape `mise run version:json`
+# prints", so the local and CI answers stay comparable.
+[tasks."version:json"]
+alias = []
+depends = ["git:tags:fetch"]
+description = "Print the GitVersion JSON for the working tree, or an empty object"
+hide = true
+run = '''
+#!/usr/bin/env bash
+set -eo pipefail
+# `/nocache` because GitVersion's cache invalidates on the COMMIT, not on the tag
+# graph -- an entry computed before a tag moved keeps being served at exactly the
+# moment the answer changed. The task above force-fetches tags for the same
+# reason; caching the result would undo it.
+#
+# AssemblySemVer/AssemblySemFileVer are .NET four-part assembly versions
+# (`0.0.1.0`). Nothing in a Rust project consumes them, and they read as a third
+# and fourth disagreeing version beside SemVer and MajorMinorPatch.
+gitversion /nocache /output json \
+  | jq -Sr 'del(.AssemblySemVer, .AssemblySemFileVer) + {MajorMinor: "\(.Major).\(.Minor)"}' \
+    2>/dev/null || echo '{}'
+'''
+shell = "bash -c"
+
+# ONE anchor, named explicitly -- and that is the adaptation from the source
+# repository, not a simplification to undo. Its version:sync DISCOVERS files with
+# `git ls-files` and rewrites every markdown restatement it finds, which is right
+# for a project whose READMEs carry install snippets. Here the only markdown
+# occurrences of the version are PROSE about the name reservation:
+#
+#   **This crate is a name reservation.** Version `0.0.0` claims the name...
+#   ...The version will move off `0.0.0` when there is something real to ship
+#
+# A discovering rewrite would turn those into "Version `0.1.0` claims the name",
+# which is not a stale number but a false sentence -- and the second one becomes
+# self-contradictory. So this writes `[workspace.package] version` and nothing
+# else. Add an anchor here deliberately when a file genuinely restates the
+# version; do not swap this for discovery.
+[tasks."version:sync"]
+alias = ["vs"]
+description = "Write the release version into Cargo.toml's [workspace.package]. --check reports drift without writing"
+dir = "{{ config_root }}"
+run = '''
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+checking="${usage_check:-false}"
+
+if [ "${usage_from_git:-false}" = "true" ]; then
+    version="$(mise run version:json | jq -r '.MajorMinorPatch // empty')"
+    if [ -z "$version" ]; then
+        echo "version:sync: gitversion produced no MajorMinorPatch; is it installed?" >&2
+        exit 1
+    fi
+else
+    version="${usage_to:?pass --to <version> or --from-git}"
+fi
+
+current="$(taplo get -f Cargo.toml '.workspace.package.version')"
+
+if [ "$current" = "$version" ]; then
+    echo "version:sync: Cargo.toml already at ${version}"
+    exit 0
+fi
+
+if [ "$checking" = true ]; then
+    echo "version:sync: Cargo.toml declares ${current}, release version is ${version}" >&2
+    exit 1
+fi
+
+# Scoped to the [workspace.package] table rather than a global substitution: a
+# bare `s/^version = .*/` would also rewrite the version of any other table that
+# happens to declare one, and Cargo.toml has several tables below this point.
+tmp="$(mktemp)"
+awk -v new="$version" '
+    /^\[/ { in_ws = ($0 == "[workspace.package]") }
+    in_ws && /^version = / && !done { sub(/=.*/, "= \"" new "\""); done = 1 }
+    { print }
+' Cargo.toml > "$tmp"
+mv "$tmp" Cargo.toml
+
+# Cargo.lock restates each member's version, and cargo owns that file -- so it is
+# regenerated rather than edited. Without this the lock is left behind and the
+# next cargo command rewrites it as an unrelated-looking diff.
+cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace >/dev/null
+
+echo "version:sync: Cargo.toml ${current} -> ${version}"
+'''
+shell = "bash -c"
+usage = '''
+flag "--from-git" help="take the version from GitVersion instead of --to"
+flag "--to <version>" help="explicit version to write, e.g. 0.1.0"
+flag "--check" help="report drift and exit non-zero without writing"
+'''
+
+# The whole bump in one place: compute the next version and write it where it is
+# declared. GitVersion is the sole authority -- `git cliff --bump` runs its own
+# conventional-commit inference and can disagree, and since version.yml and
+# publish.yml act on GitVersion, a cliff-inferred number would tag a version the
+# release pipeline never produces. That is why `changelog` exposes no --bump.
+#
+# Neither commits nor tags: version.yml's Release job cuts the tag, and the commit
+# needs the per-commit approval every commit here needs.
+[tasks."release:prepare"]
+alias = ["rp"]
+description = "Compute the next version from GitVersion and write it into Cargo.toml. --check previews without writing"
+dir = "{{ config_root }}"
+run = '''
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+checking="${usage_check:-false}"
+
+json="$(mise run version:json)"
+version="$(printf '%s' "$json" | jq -r '.MajorMinorPatch // empty')"
+if [ -z "$version" ]; then
+    echo "release:prepare: gitversion produced no MajorMinorPatch; is it installed?" >&2
+    exit 1
+fi
+
+# Preparing a release ON A BRANCH is supported, not an accident: bump, open a PR,
+# merge. This warns rather than refuses, because MajorMinorPatch is derived from
+# the tags plus the conventional-commit increment rules -- NOT from commit
+# distance -- so the branch and the post-merge default branch agree. It stays a
+# warning because that can break: if another branch merges first carrying a
+# breaking change, main resolves higher than what was written here.
+label="$(printf '%s' "$json" | jq -r '.PreReleaseLabel // empty')"
+if [ -n "${label}" ]; then
+    printf 'note: preparing v%s from branch-labelled "%s" (GitVersion label "%s").\n' \
+        "$version" "$(printf '%s' "$json" | jq -r .SemVer)" "${label}" >&2
+    printf '      MajorMinorPatch matches what the default branch resolves once merged.\n' >&2
+    printf '      Re-check after merging if another release lands first.\n\n' >&2
+fi
+
+if [ "$checking" = true ]; then
+    printf 'next version: %s (currently %s)\n\n' \
+        "$version" "$(taplo get -f Cargo.toml '.workspace.package.version')"
+    # Drift is the EXPECTED state in a preview, so version:sync's non-zero exit
+    # must not stop the changelog below.
+    mise run version:sync --to "$version" --check || true
+    printf '\n--- CHANGELOG.md entries for v%s ---\n' "$version"
+    mise run changelog --unreleased --stdout --tag "v${version}"
+    exit 0
+fi
+
+mise run version:sync --to "$version"
+
+# CHANGELOG.md is deliberately NOT written here. changelog.yml regenerates and
+# commits it after the release exists, so the file is cut from the tag that
+# actually shipped rather than from a local guess at the next one -- and the two
+# can never disagree. `--check` above still previews the entries.
+printf 'release prepared: v%s -- review, commit and let CI tag.\n' "$version"
+printf '  CHANGELOG.md is generated by the release workflow, not here.\n'
+'''
+shell = "bash -c"
+usage = 'flag "--check" help="preview the computed version and changelog entries without writing"'

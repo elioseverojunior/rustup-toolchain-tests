@@ -501,48 +501,74 @@ jobs:
             | jq -r '.packages[] | select(.publish != []) | .targets[]
                      | select(.kind[] == "bin") | .name' | sort -u)
 
-          # A workspace with no bin targets AT ALL is a library, and a library
-          # has nothing to smoke-test. This one is: `rustup-toolchain-tests`
-          # ships a single lib plus its build script. The unconditional `exit 1`
-          # that used to stand here came from the workspace this `.github/` was
-          # transplanted from, which always shipped a binary and where an empty
-          # list really did mean something had broken. Carried over unchanged,
-          # it failed this repository on its correct and permanent state.
+          # One if/elif/else, and the success paths deliberately do NOT call
+          # `exit 0`. Under `shell: bash -l {0}` this step's own shell is a
+          # LOGIN shell at SHLVL=1, so on exit it runs ~/.bash_logout, which on
+          # this runner image is the Ubuntu default:
+          #
+          #   if [ "$SHLVL" = 1 ]; then
+          #       [ -x /usr/bin/clear_console ] && /usr/bin/clear_console -q
+          #   fi
+          #
+          # clear_console IS present here and there is no tty in CI, so it
+          # fails, and on bash 5.2.21 that status replaces the one `exit 0`
+          # asked for. The step then reports "Process completed with exit code
+          # 1" having printed its own output first.
+          #
+          # Confirmed by controlled comparison in CI rather than reasoned about:
+          # a step whose whole body was `echo; exit 0` FAILED, and the identical
+          # step preceded by `: > ~/.bash_logout` PASSED. Two things make this
+          # easy to misdiagnose -- a NESTED `bash -l` inherits SHLVL >= 2 so the
+          # logout branch is skipped and `exit 0` works, and bash 5.3 does not
+          # reproduce it at all. A local `bash script.sh` check will therefore
+          # pass while CI fails.
+          #
+          # Falling off the end sidesteps it entirely, which is what every
+          # passing step in this job already does -- `Build release binary` two
+          # steps up included. `exit 1` is still used where failing IS the
+          # intent: those want a non-zero status and any non-zero will do, so
+          # the quirk cannot mask them.
           if [ "${#ALL_BINS[@]}" -eq 0 ]; then
+            # No bin targets AT ALL is a library, and a library has nothing to
+            # smoke-test. This one is: `rustup-toolchain-tests` ships a single
+            # lib plus its build script. The unconditional `exit 1` that used to
+            # stand here came from the workspace this `.github/` was transplanted
+            # from, which always shipped a binary and where an empty list really
+            # did mean something had broken. Carried over unchanged, it failed
+            # this repository on its correct and permanent state.
             echo "::notice::no bin targets in this workspace; nothing to smoke-test"
-            exit 0
-          fi
 
-          # Bins exist but every one is `publish = false`. That is NOT a library
-          # workspace, it is a metadata mistake -- a release artefact silently
-          # demoted -- so the original fail-closed behaviour is kept for exactly
-          # this case, which is what it was always guarding against.
-          if [ "${#BINS[@]}" -eq 0 ]; then
+          elif [ "${#BINS[@]}" -eq 0 ]; then
+            # Bins exist but every one is `publish = false`. That is NOT a
+            # library workspace, it is a metadata mistake -- a release artefact
+            # silently demoted -- so the original fail-closed behaviour is kept
+            # for exactly this case, which is what it always guarded against.
             echo "::error::this workspace declares bin targets (${ALL_BINS[*]}) but none are publishable; a release artefact has probably been marked publish = false by mistake"
             exit 1
+
+          else
+            # `--help` with no per-binary special-casing: clap answers it at the
+            # top level before any subcommand dispatch runs, so a binary that
+            # would otherwise block on stdin still returns promptly.
+            for BIN in "${BINS[@]}"; do
+              echo "::group::${BIN}"
+
+              # Checked explicitly so a missing binary names its own cause.
+              # Without this the invocation below runs a path that does not
+              # exist and bash exits 127 with nothing but "No such file or
+              # directory", which reads like a broken runner rather than a
+              # build/metadata disagreement -- the real cause is a bin whose
+              # `required-features` the build step did not enable.
+              if [ ! -x "./target/release/${BIN}" ]; then
+                echo "::error::${BIN} is a bin target in cargo metadata but was not built. If it declares required-features, the build step must enable them (it uses --all-features)."
+                exit 1
+              fi
+
+              "./target/release/${BIN}" --help
+
+              echo "::endgroup::"
+            done
           fi
-
-          # `--help` with no per-binary special-casing: clap answers it at the
-          # top level before any subcommand dispatch runs, so a binary that
-          # would otherwise block on stdin still returns promptly.
-          for BIN in "${BINS[@]}"; do
-            echo "::group::${BIN}"
-
-            # Checked explicitly so a missing binary names its own cause. Without
-            # this the invocation below runs a path that does not exist and bash
-            # exits 127 with nothing but "No such file or directory", which reads
-            # like a broken runner rather than a build/metadata disagreement --
-            # the real cause is a bin whose `required-features` the build step
-            # did not enable.
-            if [ ! -x "./target/release/${BIN}" ]; then
-              echo "::error::${BIN} is a bin target in cargo metadata but was not built. If it declares required-features, the build step must enable them (it uses --all-features)."
-              exit 1
-            fi
-
-            "./target/release/${BIN}" --help
-
-            echo "::endgroup::"
-          done
 
       - name: Assert no changes on git tree
         shell: bash -l {0}

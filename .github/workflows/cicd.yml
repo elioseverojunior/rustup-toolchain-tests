@@ -402,7 +402,34 @@ jobs:
           tool-name: "Tarpaulin"
 
   # ──────────────────────────────────────────────
-  #  7.  Build
+  #  7.  All Green — gate for the jobs that follow
+  # ──────────────────────────────────────────────
+  all-green:
+    name: All Green
+    needs: [setup, version, lint, sast, msrv, tests]
+    runs-on: ${{ vars.RUNS_ON_ARM64 || vars.RUNS_ON || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    if: >
+      success()
+      && needs.setup.result == 'success'
+      && needs.version.result == 'success'
+      && needs.lint.result == 'success'
+      && needs.sast.result == 'success'
+      && needs.msrv.result == 'success'
+      && needs.tests.result == 'success'
+    steps:
+
+      - name: Assert all green
+        shell: bash -l {0}
+        run: |
+          set -eo pipefail
+          echo "::group::All Green Gate Checker"
+          echo "All green, proceeding to build and release"
+          echo "::endgroup::"
+
+  # ──────────────────────────────────────────────
+  #  8.  Build
   # ──────────────────────────────────────────────
   build:
     name: Build
@@ -413,13 +440,10 @@ jobs:
     # artifact passes between them -- so waiting on it served no purpose beyond
     # serialising the two longest jobs. `release` below now depends on both, so
     # the gate is unchanged: a failing test still blocks the release.
-    needs: [setup, version, lint, sast]
+    needs: [all-green]
     if: >
       success()
-      && needs.setup.result == 'success'
-      && needs.version.result == 'success'
-      && needs.lint.result == 'success'
-      && needs.sast.result == 'success'
+      && needs.all-green.result == 'success'
     runs-on: ${{ vars.RUNS_ON_ARM64 || vars.RUNS_ON || 'ubuntu-latest' }}
     steps:
       - name: Checkout
@@ -584,7 +608,7 @@ jobs:
           echo "::endgroup::"
 
   # # ──────────────────────────────────────────────
-  # #  8.  Release
+  # #  9.  Release
   # # ──────────────────────────────────────────────
   # release:
   #   name: Release
@@ -886,7 +910,7 @@ jobs:
   #           --latest
 
   # # ──────────────────────────────────────────────
-  # #  9.  Publish — package, attest, sign, publish
+  # #  10.  Publish — package, attest, sign, publish
   # # ──────────────────────────────────────────────
   # # Invoked rather than triggered. `release` above pushes the tag with
   # # GITHUB_TOKEN, and GitHub does not raise workflow-triggering events for that

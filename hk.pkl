@@ -14,8 +14,9 @@
 // worth doing when a task already exists for local use; here none of them do,
 // so the indirection would mean writing ~15 tasks whose only caller is this
 // file. The tools themselves are pinned in mise.toml's [tools].
+// No `import ... Builtins.pkl`: every step below is spelled out, for the reason
+// the gitleaks step documents.
 amends "package://github.com/jdx/hk/releases/download/v1.55.0/hk@1.55.0#/Config.pkl"
-import "package://github.com/jdx/hk/releases/download/v1.55.0/hk@1.55.0#/Builtins.pkl"
 
 local linters = new Mapping<String, Step> {
     // Self-contained: `hk util` is hk's own built-in implementation of the
@@ -60,12 +61,42 @@ local linters = new Mapping<String, Step> {
         fix = "hk util mixed-line-ending --fix {{ files }}"
     }
 
-    // Reads .gitleaks.toml.
-    ["gitleaks"] = Builtins.gitleaks
+    // Spelled out rather than `Builtins.gitleaks`, which is what this was first
+    // written as -- and which ran ZERO times while `hk check --all` still
+    // reported success. The builtin selects files with `types = List("text")`
+    // and declares no `glob`; when that selector yields nothing the step is
+    // skipped silently, so a secret scanner that never executes is
+    // indistinguishable from one that found nothing. It was caught only by
+    // counting the steps in the output against the steps in this file.
+    //
+    // An explicit `glob` cannot fail that way, and it does not depend on an hk
+    // version's handling of `types` -- which matters here because the builtin
+    // could not be verified locally: hk publishes no darwin/amd64 binary (the
+    // same gap mise.toml's `aqua:hk` platform gate exists for), so the version
+    // CI runs cannot be executed on an Intel Mac. The command is the builtin's
+    // own, kept verbatim. Reads .gitleaks.toml.
+    ["gitleaks"] = new Step {
+        glob = "**"
+        check = "gitleaks dir --redact --verbose --no-banner {{ files }}"
+    }
 
-    // Workflows only. actionlint parses `.github/workflows/*.yml`; the composite
-    // actions under `.github/actions/*/action.yml` are a different schema it
-    // does not lint, so globbing them in would report nothing either way.
+    // The glob below must stay pointed at the workflows directory ALONE.
+    // Extending it to also cover the actions directory reads like an obvious
+    // omission -- the composite actions are YAML under .github too -- and it
+    // turns this gate RED. Measured rather than assumed: adding that second
+    // directory took the selected set from 7 files to 10, so hk's single-star
+    // segment does descend into each action's own subdirectory, and actionlint
+    // does not skip an action.yml once handed one. It parses the file AS A
+    // WORKFLOW and rejects it:
+    //
+    //   .github/actions/bot-setup/action.yml:5:1:
+    //     "jobs" section is missing in workflow [syntax-check]
+    //     "on" section is missing in workflow [syntax-check]
+    //     unexpected key "author" for "workflow" section
+    //
+    // All three composite actions fail that way at once. actionlint has no
+    // composite-action mode to switch on; that file type is simply out of scope
+    // for the tool, so this glob is the only thing keeping them out.
     ["actionlint"] = new Step {
         glob = ".github/workflows/*.{yml,yaml}"
         check = "actionlint {{ files }}"

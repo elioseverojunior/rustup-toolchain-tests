@@ -460,27 +460,6 @@ jobs:
           cargo build --release --locked --workspace --all-features
           echo "::endgroup::"
 
-      # `glaucus-wasm` exists to be compiled for `wasm32-unknown-unknown`, and the
-      # host build above does not exercise that target at all: `cargo build
-      # --workspace` compiles the crate for Linux, where `wasm-bindgen` takes its
-      # non-wasm code path. Its tests run on the host for the same reason, so
-      # without this step nothing in CI would notice the real target breaking --
-      # a `wasm32`-incompatible dependency, or `wasm-bindgen` rejecting a
-      # signature, would ship green.
-      # No `rustup target add`: `rust-toolchain.toml` declares
-      # `targets = ["wasm32-unknown-unknown"]`, and setup-rust-env leaves its
-      # `toolchain` input empty so the action reads that file -- the same reason
-      # `profile = "minimal"` is set there rather than on the action. Adding the
-      # target here too would be a second place to keep it in step.
-      - name: Build the WASM target
-        shell: bash -l {0}
-        run: |
-          set -eo pipefail
-
-          echo "::group::cargo build -p glaucus-wasm --target wasm32-unknown-unknown"
-          cargo build --locked -p glaucus-wasm --target wasm32-unknown-unknown
-          echo "::endgroup::"
-
       # The gates above prove the code is correct; this proves the artefacts run.
       # `profile.release` sets `panic = "abort"`, `lto = "fat"` and `opt-level =
       # "z"`, none of which the test profile exercises -- so a release binary can

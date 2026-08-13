@@ -11,3 +11,14 @@
 
 # Cargo Vet
 **/.cargo-vet
+
+### Coverage
+# Written into the repo ROOT, not under /target, so the rule above does not
+# cover them: tarpaulin.toml asks for the Xml and Lcov reporters, which emit
+# cobertura.xml and lcov.info beside Cargo.toml, and cicd.yml converts the
+# second into results.sarif. All three are build outputs of `mise run coverage`
+# and regenerate on every run, so they are ignored rather than committed --
+# CI uploads them as the `coverage-report` artifact instead.
+/cobertura.xml
+/lcov.info
+/results.sarif

@@ -215,21 +215,23 @@ jobs:
 
           mkdir -p dist
 
-          # `publish = false` gates `cargo publish` ONLY -- `cargo package` has no
-          # registry semantics and packages the dev-only crates regardless. Left
-          # unfiltered, the `cp` below drops glaucus-bench, glaucus-fuzz and
-          # glaucus-yaml-test-suite into dist/, where they get hashed, attested,
-          # cosign-signed and attached to the release. Derived, not hardcoded, so
-          # a future dev-only crate needs no edit here; see `crates:dev-only` in
-          # mise.toml for why the logic lives there.
+          # No dev-only subtraction here, and its absence is deliberate. This step
+          # was transplanted from a workspace with three `publish = false`
+          # harnesses, where `cargo package --workspace` packaged them anyway --
+          # `publish = false` gates `cargo publish` ONLY, `cargo package` has no
+          # registry semantics -- and the `cp` below would have dropped them into
+          # dist/ to be hashed, attested, cosign-signed and attached to the
+          # release. It subtracted them via `mise run crates:dev-only`.
           #
-          # Assigned to a variable FIRST, then split -- not read straight from a
-          # process substitution. `read -ra ARR < <(cmd)` discards cmd's exit
-          # status entirely whenever cmd wrote any stdout before failing, so the
-          # task's fail-closed guard would be silently ignored (verified). Under
-          # `set -e` a failed command substitution in an assignment does abort.
-          EXCLUDE_ARGS="$(mise run crates:dev-only --flags --verbose)"
-          read -ra EXCLUDES <<< "${EXCLUDE_ARGS}"
+          # THIS workspace has one crate and it is publishable
+          # (`cargo metadata | jq '[.packages[]|select(.publish==[])]|length'`
+          # returns 0), so that subtraction is a no-op. The task it called is
+          # documented to FAIL rather than return an empty set -- an empty result
+          # there means a harness silently lost its `publish = false` -- so
+          # porting it would have hard-failed this step at every release.
+          #
+          # Restore both together if a `publish = false` crate is ever added: the
+          # task and this call site, not one without the other.
 
           # Neither `--no-verify` nor `--allow-dirty`. `--no-verify` skips the
           # build check, so a crate that does not compile could still be
@@ -238,8 +240,8 @@ jobs:
           # tagged commit, which would have signed a tarball for a state no
           # commit describes. At a tag both should hold, so a failure here is
           # real news.
-          cargo package --workspace --all-features --verbose "${EXCLUDES[@]+"${EXCLUDES[@]}"}"
-          cargo package --workspace --all-features --list --verbose "${EXCLUDES[@]+"${EXCLUDES[@]}"}"
+          cargo package --workspace --all-features --verbose
+          cargo package --workspace --all-features --list --verbose
           cp target/package/*.crate dist/
 
       - name: Compute hashes
@@ -392,22 +394,22 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          # Same subtraction as the `Package crates` step, and for the same
-          # reason: `cargo package` ignores `publish = false`. A dry run that
+          # No dev-only subtraction, for the reason given in full at the
+          # `Package crates` step: this workspace has no `publish = false` crate,
+          # so the filter that step was transplanted with is a no-op here. What
+          # matters is that BOTH steps package the same set -- a dry run that
           # verified a different crate set than the real publish would not be a
-          # rehearsal of anything. Assignment-then-split for the exit-status
-          # reason documented at the `Package crates` step.
-          EXCLUDE_ARGS="$(mise run crates:dev-only --flags --verbose)"
-          read -ra EXCLUDES <<< "${EXCLUDE_ARGS}"
+          # rehearsal of anything -- so if one grows the subtraction back, so does
+          # the other.
 
           echo "📦 Verifying package..."
-          cargo package --workspace --all-features --verbose "${EXCLUDES[@]+"${EXCLUDES[@]}"}"
-          cargo package --workspace --all-features --list --verbose "${EXCLUDES[@]+"${EXCLUDES[@]}"}"
+          cargo package --workspace --all-features --verbose
+          cargo package --workspace --all-features --list --verbose
 
-          # Check package size. This counts only what ships: unfiltered, the
-          # ~9.2k conformance fixtures in glaucus-yaml-test-suite dominated the
-          # total and the number said nothing about the published crates.
-          PACKAGE_SIZE=$(cargo package --workspace --all-features --list "${EXCLUDES[@]+"${EXCLUDES[@]}"}" | wc -l)
+          # Counts only what ships. In the source workspace this was dominated by
+          # ~9.2k conformance fixtures in a dev-only crate until those were
+          # subtracted; here every packaged file is a published one.
+          PACKAGE_SIZE=$(cargo package --workspace --all-features --list | wc -l)
           echo "Package contains ${PACKAGE_SIZE} files"
 
       # Answers "has this NAME been taken", not merely "is this version taken".

@@ -30,6 +30,7 @@ quiet = true
 # The Rust toolchain stays out, for the reason given at the top of this file.
 [tools]
 actionlint = { version = "latest" }
+git-cliff = { version = "latest" }
 gitleaks = { version = "latest" }
 taplo = { version = "latest" }
 
@@ -38,7 +39,14 @@ taplo = { version = "latest" }
 # why `.github/actions/setup-rust-env` installs cargo-binstall through
 # rust-toolchain's `cargo-tools` input BEFORE mise-action runs, and why leaving
 # it out once cost ~9 minutes per job.
+#
+# cargo-crap and cargo-tarpaulin serve cicd.yml's Tests job rather than hk:
+# `mise run coverage` shells out to tarpaulin, and the step after it converts
+# tarpaulin's lcov.info to SARIF with a BARE `cargo-crap` (not `cargo crap`), so
+# the binary has to be on PATH in its own right.
+"cargo:cargo-crap" = { version = "latest" }
 "cargo:cargo-deny" = { version = "latest" }
+"cargo:cargo-tarpaulin" = { version = "latest" }
 "cargo:committed" = { version = "latest" }
 "cargo:rumdl" = { version = "latest" }
 
@@ -76,10 +84,6 @@ _.file = ".env"
 [tasks.build]
 description = "Compile every workspace member - all features, all targets"
 dir = "{{ config_root }}"
-usage = '''
-flag "--release" help="use the release profile instead of dev"
-arg "[cargo-args]" var=#true help="extra flags forwarded verbatim to cargo (e.g. --locked)"
-'''
 run = '''
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -95,6 +99,10 @@ args=(--workspace --all-features --all-targets)
 
 cargo build "${args[@]}" ${extra[@]+"${extra[@]}"}
 '''
+usage = '''
+flag "--release" help="use the release profile instead of dev"
+arg "[cargo-args]" var=#true help="extra flags forwarded verbatim to cargo (e.g. --locked)"
+'''
 
 # Runs the tests in TWO passes, because one cargo invocation cannot cover both.
 # Cargo documents `--all-targets` as "Test all targets (does not include
@@ -104,10 +112,6 @@ cargo build "${args[@]}" ${extra[@]+"${extra[@]}"}
 [tasks.test]
 description = "Run every workspace test - all features, all targets, plus doctests"
 dir = "{{ config_root }}"
-usage = '''
-flag "--release" help="use the release profile instead of dev"
-arg "[cargo-args]" var=#true help="extra flags forwarded verbatim to cargo (e.g. --no-fail-fast)"
-'''
 run = '''
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -135,6 +139,10 @@ else
   cargo test "${args[@]}" --doc ${extra[@]+"${extra[@]}"}
 fi
 '''
+usage = '''
+flag "--release" help="use the release profile instead of dev"
+arg "[cargo-args]" var=#true help="extra flags forwarded verbatim to cargo (e.g. --no-fail-fast)"
+'''
 
 # Rewrites the project name everywhere it appears. This automates the checklist
 # in the root Cargo.toml (`>>> PER-PROJECT`) rather than restating it: that list
@@ -152,11 +160,6 @@ fi
 [tasks.rename]
 description = "Rewrite the project name across the workspace - previews unless --apply"
 dir = "{{ config_root }}"
-usage = '''
-arg "<new-name>" help="new project name (crates.io rules: letter first, then A-Za-z0-9_-)"
-flag "--apply" help="write the changes; without it the task only reports what would change"
-flag "--from <old-name>" help="current name to replace (default: the repo directory name)"
-'''
 run = '''
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -412,6 +415,11 @@ else
   echo "      mise run rename ${new}${usage_from:+ --from ${old}} --apply"
 fi
 '''
+usage = '''
+arg "<new-name>" help="new project name (crates.io rules: letter first, then A-Za-z0-9_-)"
+flag "--apply" help="write the changes; without it the task only reports what would change"
+flag "--from <old-name>" help="current name to replace (default: the repo directory name)"
+'''
 
 # Every published workspace member must carry its own licence texts: `cargo
 # package` collects only files UNDER the package root, so a crate that declares
@@ -522,9 +530,6 @@ cargo publish --workspace --all-features --dry-run --allow-dirty
 [tasks.publish]
 description = "Publish every workspace crate to crates.io (IRREVERSIBLE)"
 dir = "{{ config_root }}"
-usage = '''
-arg "[cargo-args]" var=#true help="extra flags forwarded verbatim to cargo publish (e.g. --allow-dirty, --no-verify)"
-'''
 run = '''
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -645,6 +650,9 @@ cargo publish --workspace --all-features ${extra[@]+"${extra[@]}"}
 mkdir -p dist
 cp target/package/*.crate dist/
 '''
+usage = '''
+arg "[cargo-args]" var=#true help="extra flags forwarded verbatim to cargo publish (e.g. --allow-dirty, --no-verify)"
+'''
 
 # Claims a name on crates.io and hands the repo back exactly as it was. Every
 # line of the body is an existing task, so what this adds is a sequence, a
@@ -670,11 +678,6 @@ cp target/package/*.crate dist/
 alias = ["reserve"]
 description = "Claim a crates.io name: rename, verify, publish, then revert the rename"
 dir = "{{ config_root }}"
-usage = '''
-arg "<new-name>" help="crates.io name to claim (letter first, then A-Za-z0-9_-)"
-flag "--from <old-name>" help="current name to replace (default: the repo directory name)"
-flag "--allow-uncommitted" help="proceed even though the tree already has uncommitted changes"
-'''
 run = '''
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -732,3 +735,357 @@ echo "published. reverting the rename so the template is reusable..."
 git reset --hard HEAD
 echo "tree restored to HEAD; '${usage_new_name}' is now claimed on crates.io"
 '''
+usage = '''
+arg "<new-name>" help="crates.io name to claim (letter first, then A-Za-z0-9_-)"
+flag "--from <old-name>" help="current name to replace (default: the repo directory name)"
+flag "--allow-uncommitted" help="proceed even though the tree already has uncommitted changes"
+'''
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Tasks the workflows in .github/ call
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `.github/` was transplanted from a repository whose mise.toml carried these;
+# only the workflows came across, so every one of these calls resolved to a
+# missing task. The Lint job failed first and masked the rest -- once it went
+# green the Tests job died on `mise run coverage`, and publish/changelog would
+# have followed at the next release.
+#
+# Ported and ADAPTED, not copied: the source workspace is a multi-crate project
+# with dev-only harnesses, a docs site and several files restating the version.
+# This one is a single publishable crate. Where that difference matters it is
+# called out at the task.
+
+# The coverage gate cicd.yml's Tests job runs. Everything about the report shape
+# -- engine, ignores, output formats -- lives in tarpaulin.toml; only the run
+# types and the threshold are decided here.
+#
+# `--run-types Tests` ALONE, deliberately. Adding Doctests is the obvious
+# completion and it drags in a nightly toolchain: rustdoc's --persist-doctests is
+# nightly-only, so tarpaulin resolves the floating `nightly` CHANNEL to build
+# them, ignoring RUSTUP_TOOLCHAIN. Unit tests still compile with the project's
+# stable pin, and the two profraw formats are only mergeable while both
+# compilers agree -- a nightly LLVM bump broke exactly that in the source repo
+# ("consistency check for reading counts failed"), which is why its task pins a
+# DATED nightly. This crate has no doc examples to measure, so it buys the
+# hazard nothing. Adding one means adding `--run-types Doctests` AND pinning a
+# dated nightly here; do both or neither.
+[tasks.coverage]
+alias = ["cov", "tarpaulin"]
+description = "Run the test suite under cargo-tarpaulin and fail below the threshold. Report shape lives in tarpaulin.toml"
+dir = "{{ config_root }}"
+run = '''
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# Expanded with the `+` form rather than a length test: the obvious spelling for
+# an array length opens with the brace-hash pair Tera reads as a comment, and
+# mise renders this body as a Tera template BEFORE bash sees it. A bare
+# "${args[@]}" is also an unbound-variable error under `set -u` when empty.
+eval "args=(${usage_args:-})"
+
+cargo tarpaulin --workspace --engine llvm \
+  --run-types Tests \
+  --fail-under "${usage_threshold?}" \
+  ${args[@]+"${args[@]}"}
+'''
+shell = "bash -c"
+usage = '''
+flag "-t --threshold <threshold>" help="coverage percentage below which the task fails" default="100" env="RUST_COVERAGE_THRESHOLD"
+arg "[args]" var=#true help="extra arguments forwarded to cargo-tarpaulin (e.g. --out Html)"
+'''
+
+# THE one git-cliff invocation in this repository, so the tool, its config path
+# and its range selectors cannot drift apart across callers.
+#
+# There is deliberately no `--bump`. git-cliff would run its own
+# conventional-commit inference, and GitVersion is the authority here --
+# version.yml and publish.yml act on GitVersion's number, so a cliff-inferred one
+# would write a changelog heading under a version the release pipeline never
+# produces. `release:prepare` is the supported path.
+[tasks.changelog]
+alias = ["cliff", "changelog:build", "changelog:preview"]
+description = "Regenerate CHANGELOG.md from the commit history with git-cliff (config in cliff.toml). Never hand-edit CHANGELOG.md"
+dir = "{{ config_root }}"
+run = '''
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+if [ "${usage_verbose:-false}" = "true" ]; then set -x; fi
+
+# Plain `if` blocks rather than `[ ... ] && args+=(...)`: under `set -e` an
+# AND-OR list whose test fails returns 1 as a statement and kills the task, so
+# the terse form would abort the moment any flag was left off.
+args=()
+if [ -n "${usage_tag:-}" ]; then args+=(--tag "$usage_tag"); fi
+if [ "${usage_unreleased:-false}" = "true" ]; then args+=(--unreleased); fi
+if [ "${usage_latest:-false}" = "true" ]; then args+=(--latest); fi
+if [ -n "${usage_strip:-}" ]; then args+=(--strip "$usage_strip"); fi
+
+# `--stdout` wins over `--output` so a preview can never overwrite the file by
+# accident; git-cliff treats the two as mutually exclusive.
+if [ "${usage_stdout:-false}" = "true" ]; then
+    git cliff "${args[@]}"
+else
+    git cliff "${args[@]}" --output "${usage_output:-CHANGELOG.md}"
+fi
+'''
+shell = "bash -c"
+usage = '''
+flag "-v --verbose" help="trace each command before running it (set -x)"
+flag "-t --tag <tag>" help="render unreleased commits under this version instead of [Unreleased], e.g. v0.1.0"
+flag "--stdout" help="print to stdout instead of writing the file (pair with --tag to preview a release)"
+flag "--unreleased" help="emit only the commits since the last tag"
+flag "--latest" help="emit only the most recent release section -- a GitHub release body, not the full history"
+flag "--strip <part>" help="drop part of the rendered output: header, footer or all"
+flag "-o --output <path>" help="write somewhere other than CHANGELOG.md, e.g. RELEASE_NOTES.md"
+'''
+
+# Answers "has this NAME been taken", which is a different question from "is this
+# VERSION taken" and the one that actually gates a publish. It lives here rather
+# than in publish.yml so a human can run the exact release-time logic BEFORE
+# cutting a release.
+#
+# EVERYTHING HERE FAILS CLOSED. The tempting spelling, `curl -sSf ... || true`,
+# collapses 404, 500, DNS failure and timeout into the same empty output -- so a
+# network blip becomes indistinguishable from "this name is free". Only a
+# definitive 404 means "not published"; any other non-200 stops the caller.
+#
+# TERA, NOT BASH, PARSES THIS FIRST. mise renders `run` as a Tera template, and
+# brace-hash opens a Tera comment -- so an array-length expansion fails at render
+# time with "Closing comment tag not found" before bash ever sees it. That is why
+# every count below is an explicit counter variable rather than an array length.
+[tasks."crates:status"]
+alias = ["cs", "crates:check"]
+description = "Classify every publishable workspace crate on crates.io (absent / exists / version-taken) and verify ownership. Fails closed on any inconclusive lookup; prints a trailing bootstrap_needed=<bool> line for CI to consume"
+dir = "{{ config_root }}"
+run = '''
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# Defaults to the MANIFEST version, because that is the version cargo will
+# actually upload -- `cargo publish` reads Cargo.toml and ignores whatever a
+# release pipeline computed. GitVersion and Cargo.toml drift routinely (CI warns
+# "Cargo.toml declares X but this run resolved Y"), and checking the resolved
+# version while cargo uploads the manifest one asks about a release that does not
+# exist: every crate reads "available", then cargo fails on the duplicates.
+version="${usage_version:-$(cargo metadata --no-deps --format-version 1 \
+    | jq -r '[.packages[] | select(.publish != []) | .version] | first // empty')}"
+: "${version:?could not determine a version to check}"
+verify="${usage_verify:-false}"
+owner="${usage_owner:-$(git config --get remote.origin.url | sed -E 's#.*[:/]([^/]+)/[^/]+$#\1#')}"
+
+# Repo name DERIVED, not spelled out. The source of this task hardcoded its own
+# project name here, which is the one line that silently becomes a lie when a
+# template is cloned -- and `mise run rename` would not catch it either.
+repo="$(basename "$(git config --get remote.origin.url)" .git)"
+ua="${repo}-publish-workflow (+https://github.com/${owner}/${repo})"
+body="$(mktemp)"
+trap 'rm -f "$body"' EXIT
+
+# Writes the response body to $body and prints the HTTP status. `|| code=000`
+# REASSIGNS on transport failure rather than appending to curl's own "000"
+# output, which would otherwise produce a garbled "HTTP 000000".
+#
+# --retry-all-errors is what makes retrying useful: without it curl retries only
+# transient transport errors, not the 5xx crates.io returns while shedding load.
+probe() {
+    local code
+    code="$(curl -sL --retry 3 --retry-delay 2 --retry-all-errors --max-time 30 \
+        -H "User-Agent: $ua" -o "$body" -w '%{http_code}' "$1")" || code=000
+    printf '%s' "$code"
+}
+
+# crates.io shards the index by name length: 1/a, 2/ab, 3/a/abc, then ab/cd/abcd.
+#
+# The length comes from `wc -c`, not from the obvious parameter expansion: that
+# spelling opens with the brace-hash pair Tera reads as a comment, and would fail
+# this task at render time. See the note above the task.
+index_url() {
+    local name="$1" path len
+    len="$(printf '%s' "$name" | wc -c | tr -d ' ')"
+    case "$len" in
+    1) path="1/$name" ;;
+    2) path="2/$name" ;;
+    3) path="3/${name:0:1}/$name" ;;
+    *) path="${name:0:2}/${name:2:2}/$name" ;;
+    esac
+    printf 'https://index.crates.io/%s' "$path"
+}
+
+# `publish` is null for publishable crates and [] for `publish = false`, so a
+# dev-only harness is never sent to the registry. This workspace has none today;
+# the filter stays because it costs nothing and the alternative is remembering to
+# add it at the moment one appears.
+members="$(cargo metadata --no-deps --format-version 1 \
+    | jq -r '.packages[] | select(.publish != []) | .name' | sort)"
+
+absent=""
+taken=""
+foreign=""
+pending=""
+todo=""
+n_absent=0
+n_taken=0
+n_foreign=0
+n_pending=0
+n_todo=0
+n_total=0
+
+for crate in $members; do
+    n_total=$((n_total + 1))
+
+    code="$(probe "$(index_url "$crate")")"
+
+    case "$code" in
+    404) state=absent ;;
+    200)
+        if jq -r '.vers' <"$body" | grep -Fxq "$version"; then
+            state=version-taken
+        else
+            state=exists
+        fi
+        ;;
+    *)
+        echo "error: crates.io index returned HTTP $code for '$crate'" >&2
+        echo "       cannot confirm publish state; refusing to guess" >&2
+        exit 1
+        ;;
+    esac
+
+    # Post-publish mode asks the opposite question: everything should now be
+    # present at this version, and anything missing is merely not indexed yet.
+    if [ "$verify" = true ]; then
+        if [ "$state" = version-taken ]; then
+            echo "  OK      $crate $version -- https://crates.io/crates/$crate/$version"
+        else
+            pending="$pending $crate"
+            n_pending=$((n_pending + 1))
+            echo "  PENDING $crate $version not indexed yet"
+        fi
+        continue
+    fi
+
+    case "$state" in
+    absent)
+        absent="$absent $crate"
+        todo="$todo $crate"
+        n_absent=$((n_absent + 1))
+        n_todo=$((n_todo + 1))
+        echo "  NEW     $crate does not exist on crates.io -- needs a first publish"
+        ;;
+    version-taken)
+        taken="$taken $crate"
+        n_taken=$((n_taken + 1))
+        echo "  DONE    $crate $version already published"
+        ;;
+    exists)
+        # The name resolves, so ownership decides whether it is ours to publish
+        # to. A name held by another account is a hard stop: no token we hold can
+        # upload to it. Teams appear in the same array as users, so a crate owned
+        # only by a GitHub team is still matched.
+        code="$(probe "https://crates.io/api/v1/crates/$crate/owners")"
+        if [ "$code" != 200 ]; then
+            echo "error: crates.io owners returned HTTP $code for '$crate'" >&2
+            exit 1
+        fi
+        owners="$(jq -r '(.users // [])[].login' <"$body" | sort -u)"
+
+        if printf '%s\n' "$owners" | grep -Fxqi "$owner"; then
+            todo="$todo $crate"
+            n_todo=$((n_todo + 1))
+            echo "  OK      $crate $version available (owned by $owner)"
+        else
+            foreign="$foreign $crate"
+            n_foreign=$((n_foreign + 1))
+            echo "  FOREIGN $crate is owned by: $(printf '%s' "$owners" | tr '\n' ' ')"
+        fi
+        ;;
+    esac
+done
+
+if [ "$n_total" -eq 0 ]; then
+    echo "error: no publishable crates found" >&2
+    exit 1
+fi
+
+if [ "$verify" = true ]; then
+    if [ "$n_pending" -gt 0 ]; then
+        echo "not yet indexed (usually transient):$pending"
+    fi
+    exit 0
+fi
+
+if [ "$n_foreign" -gt 0 ]; then
+    echo "error: these crate names belong to another account:$foreign" >&2
+    echo "       rename the crate or request ownership" >&2
+    exit 1
+fi
+
+# A PARTIAL claim is resumable, not an error. crates.io rate-limits brand-new
+# crates to a burst of 5 and then one per 10 minutes, so a workspace with more
+# new names than that CANNOT land in a single `cargo publish` -- the run stops
+# mid-way with a 429 and leaves some names claimed and some not. Treating any
+# already-published version as fatal makes that state unrecoverable: the retry
+# refuses to start precisely because the first attempt partly succeeded.
+#
+# Uploads are immutable, so re-publishing a taken version is impossible anyway;
+# excluding those crates and publishing the rest is the only move, and it is what
+# `todo` carries. When `todo` is empty the release is simply complete, which
+# keeps re-running this idempotent.
+echo "taken=$(printf '%s' "$taken" | sed 's/^ //')"
+echo "todo=$(printf '%s' "$todo" | sed 's/^ //')"
+
+if [ "$n_todo" -eq 0 ]; then
+    echo "nothing to publish: all $n_total crate(s) already at $version"
+    echo "bootstrap_needed=false"
+    exit 0
+fi
+
+if [ "$n_taken" -gt 0 ]; then
+    echo "resuming a partial publish: $n_taken of $n_total already at $version"
+fi
+
+# The trailing verdict, consumed by publish.yml to choose an auth method. A crate
+# that does not exist yet CANNOT have a Trusted Publishing config -- crates.io
+# requires the crate to exist before one can be created -- so OIDC cannot mint a
+# usable token for it and the first publish has to carry a real account token.
+if [ "$n_absent" -gt 0 ]; then
+    echo "first publish needed for:$absent"
+    echo "bootstrap_needed=true"
+else
+    echo "bootstrap_needed=false"
+fi
+'''
+shell = "bash -c"
+usage = '''
+flag "--version <version>" help="version to check (default: the workspace manifest version, which is what cargo publish uploads)"
+flag "--verify" help="post-publish mode: confirm every crate is indexed at this version instead of gating on availability"
+flag "--owner <owner>" help="expected crates.io owner login (default: the GitHub owner in remote.origin.url)"
+'''
+
+# The REUSE/SPDX gate. hk.pkl calls `comply lint-file` per changed file for the
+# pre-commit path; this is the whole-project form, which additionally catches what
+# per-file linting cannot see -- unused licences and LICENSES/ hygiene.
+#
+# comply is not in [tools]: it arrives through the `cargo-tools` input of
+# `.github/actions/setup-rust-env`, which is also what puts it under
+# rust-toolchain's `bin` cache layer.
+[tasks.comply]
+alias = ["reuse"]
+description = "Check REUSE/SPDX licence compliance with comply (defaults to `lint`); pass a subcommand, e.g. `mise run comply annotate --license MIT`"
+dir = "{{ config_root }}"
+run = '''
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# Variadic args arrive as a shell-escaped string; eval into an array so flags
+# survive intact. Fall back to `lint` (the CI gate) when nothing is passed.
+eval "args=(${usage_args:-lint})"
+comply "${args[@]}"
+'''
+shell = "bash -c"
+usage = 'arg "[args]" var=#true help="comply subcommand + flags; defaults to `lint` when omitted"'

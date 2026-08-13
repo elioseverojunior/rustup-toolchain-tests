@@ -644,36 +644,16 @@ jobs:
         if: needs.validate.outputs.should_publish != 'true'
         run: echo "Dry run -- crates packaged and verified, provenance and signing exercised, nothing published."
 
-  # Publishes the VitePress site. A job-level `uses:`, not a step: a step cannot
-  # call a workflow, which is what the previous version of this job attempted.
-  # The only docs publisher. A `publish-docs` job used to deploy rustdoc through
-  # the Pages ARTIFACT path, which this repo cannot serve -- Pages reads the
-  # `gh-pages` branch. The developer-facing API reference is docs.rs's job, built
-  # automatically on crates.io publish; this one is the user-facing site.
-  gh-pages:
-    name: Publish docs site
-    # `validate` is required, not decorative: the `if` below reads
-    # `needs.validate.outputs`, and outputs are readable only from jobs listed
-    # here. With `publish-crates` alone it is undefined, which reads as false --
-    # so the docs publish would skip on every release without ever failing.
-    needs: [validate, publish-crates]
-    if: >
-      success()
-      && needs.validate.outputs.should_publish == 'true'
-    permissions:
-      contents: write
-      pages: write
-      id-token: write
-    uses: ./.github/workflows/gh-pages.yml
-    secrets: inherit
-    # Required, not optional: gh-pages.yml's `publish` job gates on `inputs.publish`
-    # and defaults it to false, so calling without this builds the site and
-    # deploys nothing.
-    with:
-      publish: ${{ !inputs.dry-run }}
-      # Declared `required` by that workflow, which uses it only to print the
-      # docs.rs URL in its summary. `validate` already resolved it.
-      version: ${{ needs.validate.outputs.version }}
+  # There is deliberately no docs-site job here. This workflow was transplanted
+  # from a repository that ships a VitePress site, and its `gh-pages` job called
+  # `./.github/workflows/gh-pages.yml` -- a file that does not exist here, and
+  # could not, because this repository has no `docs/` tree to publish. actionlint
+  # caught it as `could not read reusable workflow file`, and it would otherwise
+  # have surfaced as an unrunnable-workflow error on the first real release.
+  #
+  # Nothing is lost: the developer-facing API reference is docs.rs's job, built
+  # automatically when the crate is published. Restore a site job here only
+  # alongside an actual `docs/` tree and its own gh-pages.yml.
 
   # ──────────────────────────────────────────────
   #  Generate the CHANGELOG.md for the release that actually shipped
@@ -709,18 +689,16 @@ jobs:
 
   summary:
     name: Publish Summary
-    needs: [validate, package, provenance, sign, publish-crates, gh-pages]
+    needs: [validate, package, provenance, sign, publish-crates]
     if: always()
     runs-on: ${{ vars.RUNS_ON_ARM64 || vars.RUNS_ON || 'ubuntu-latest' }}
     steps:
       - name: Summary
         env:
-          OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
           PROVENANCE: ${{ needs.provenance.result }}
           SIGN: ${{ needs.sign.result }}
           CRATES: ${{ needs.publish-crates.result }}
-          DOCS: ${{ needs.gh-pages.result }}
         run: |
           set -eo pipefail
 
@@ -734,17 +712,16 @@ jobs:
             echo "| SLSA provenance | ${PROVENANCE} |"
             echo "| Sigstore signing | ${SIGN} |"
             echo "| crates.io | ${CRATES} |"
-            echo "| Documentation | ${DOCS} |"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "${CRATES}" = "success" ]; then
             echo "- crates.io: https://crates.io/crates/${REPO}/${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+            # docs.rs builds FROM the crates.io upload, so it follows this line
+            # rather than any job in this workflow. It was previously gated on a
+            # docs-site job that this repository cannot run, which meant the
+            # docs.rs link never printed even on a successful publish.
+            echo "- docs.rs: https://docs.rs/${REPO}/latest" >> "$GITHUB_STEP_SUMMARY"
           elif [ "${CRATES}" = "skipped" ]; then
             echo "- crates.io: skipped (dry run)" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          if [ "${DOCS}" = "success" ]; then
-            echo "- docs.rs: https://docs.rs/${REPO}/latest" >> "$GITHUB_STEP_SUMMARY"
-            echo "- GitHub Pages: https://${OWNER}.github.io/${REPO}/" >> "$GITHUB_STEP_SUMMARY"
           fi

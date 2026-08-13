@@ -31,8 +31,8 @@ current_sample = { r = 31, g = 120, b = 180 }
 previous_sample = { r = 7, g = 26, b = 28 }
 
 # These are used by the full PDF chart to highlight which samples were outliers.
-not_an_outlier = { r = 31, g = 120, b = 180 }
 mild_outlier = { r = 5, g = 127, b = 0 }
+not_an_outlier = { r = 31, g = 120, b = 180 }
 severe_outlier = { r = 7, g = 26, b = 28 }
 
 # These are used for the line chart to compare multiple different functions.

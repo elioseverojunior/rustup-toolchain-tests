@@ -91,13 +91,13 @@ fail_on_unmatched_commit = false
 # Include only tags reachable from the current branch.
 use_branch_tags = false
 # Order releases and commits chronologically (oldest first within a release).
-topo_order = false
 sort_commits = "oldest"
+topo_order = false
 # Regex to match the tags that mark releases. The `v` prefix is optional so
 # both `git cliff --bump` (bare semver) and explicit `vX.Y.Z` tags are accepted.
 tag_pattern = "v?[0-9].*"
 
 [bump]
 # Derive the next version from conventional commit types when using `--bump`.
-features_always_bump_minor = true
 breaking_always_bump_major = true
+features_always_bump_minor = true

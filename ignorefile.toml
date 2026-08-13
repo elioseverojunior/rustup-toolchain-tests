@@ -21,9 +21,9 @@ note = "Cargo Ignores"
 ignore = ["/target"]
 
 [[gitignore.section.rule]]
-note = "Cargo Package"
 ignore = ["**/dist"]
+note = "Cargo Package"
 
 [[gitignore.section.rule]]
-note = "Cargo Vet"
 ignore = ["**/.cargo-vet"]
+note = "Cargo Vet"

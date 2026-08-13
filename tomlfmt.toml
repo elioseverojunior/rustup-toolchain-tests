@@ -9,17 +9,16 @@
 # auto-discovered at the repo root (no --config flag needed when used from mise).
 #
 # Indentation: 2 spaces (Rust convention, matches .editorconfig)
-indent_count = 2
-indent_style = "space"
+allowed_blank_lines = 2
 always_trailing_comma = false
-multiline_trailing_comma = true
-space_around_eq = true
 compact_arrays = false
 compact_inline_tables = false
-trailing_newline = true
-key_value_newlines = true
-allowed_blank_lines = 2
 crlf = false
+indent_count = 2
+indent_style = "space"
+key_value_newlines = true
+multiline_trailing_comma = true
+space_around_eq = true
 table_order = [
   "package",
   "features",
@@ -28,3 +27,4 @@ table_order = [
   "dev-dependencies",
   "workspace",
 ]
+trailing_newline = true

@@ -17,9 +17,17 @@
 # 100% gate even when every line is exercised. It needs the `llvm-tools` rustup
 # component, declared in rust-toolchain.toml.
 [default]
-ignore-tests = true
 engine = "Llvm"
-out = ["Stdout", "Xml"]
+ignore-tests = true
+# All three are consumed downstream, so dropping one silently breaks a step that
+# looks unrelated. `Stdout` is what a human reads; `Xml` writes cobertura.xml and
+# `Lcov` writes lcov.info, and cicd.yml's Tests job uploads BOTH as the
+# `coverage-report` artifact with `if-no-files-found: error`. Lcov is also what
+# the SARIF step converts (`cargo-crap --lcov lcov.info --format sarif`), and it
+# was missing here while that step already expected it -- so the conversion would
+# have skipped with "No lcov.info" and the artifact upload would then have failed
+# outright on the missing file.
+out = ["Stdout", "Xml", "Lcov"]
 
 # Exclude ONLY genuinely host-untestable entry/ABI boilerplate from the 100%
 # metric — NOT a way to dodge testing real logic (all real logic is unit-tested

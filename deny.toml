@@ -58,9 +58,9 @@ ignore = []
 
 [bans]
 # Deny multiple versions — a library must not force version conflicts downstream
+highlight = "all"
 multiple-versions = "deny"
 wildcards = "deny"
-highlight = "all"
 
 deny = []
 
@@ -81,8 +81,8 @@ skip-tree = []
 
 [sources]
 # Deny unknown sources — all deps must come from crates.io
-unknown-registry = "deny"
 unknown-git = "deny"
+unknown-registry = "deny"
 
 allow-git = []
 

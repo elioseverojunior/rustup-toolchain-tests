@@ -6,16 +6,16 @@
 # `comply` regenerates the per-file headers from the copyright field, so change
 # it here rather than hand-editing headers. See the PER-PROJECT note in
 # Cargo.toml for the full list of places identity lives.
-version = 1
+SPDX-PackageDownloadLocation = "https://github.com/elioseverojunior/rust-workspaced"
 SPDX-PackageName = "rust-workspaced"
 SPDX-PackageSupplier = "Elio Severo Junior <elioseverojunior@gmail.com>"
-SPDX-PackageDownloadLocation = "https://github.com/elioseverojunior/rust-workspaced"
+version = 1
 
 [[annotations]]
-path = ["**"]
-precedence = "aggregate"
 SPDX-FileCopyrightText = "Elio Severo Junior <elioseverojunior@gmail.com>"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
+path = ["**"]
+precedence = "aggregate"
 
 [tool.comply]
 # Custom comply settings

@@ -15,9 +15,9 @@ informational_warnings = ["unmaintained", "unsound", "notice"]
 severity_threshold = "medium"
 
 [database]
-url = "https://github.com/RustSec/advisory-db.git"
 fetch = true
 stale = false
+url = "https://github.com/RustSec/advisory-db.git"
 
 [output]
 # Strict: fail (non-zero exit) on warnings too — yanked/unmaintained/unsound,

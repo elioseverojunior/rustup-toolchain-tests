@@ -30,7 +30,12 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/glaucus
+  # `github.repository` is already `<owner>/<repo>`, so the image name tracks a
+  # repository rename with no edit here -- the same discovered-not-hardcoded
+  # rule the smoke test in cicd.yml documents. It replaces a literal crate name
+  # carried over from the workspace this `.github/` came from, which would have
+  # published this repository's images under that project's name.
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-push:
@@ -119,7 +124,7 @@ jobs:
           # `latest` is gated on a published, non-prerelease Release. Ungated,
           # ANY `workflow_dispatch` moved it -- including a manual rebuild of an
           # OLD version, which would have silently rolled `latest` backwards for
-          # every `docker pull ghcr.io/<owner>/glaucus` in existence. The
+          # every `docker pull ghcr.io/<owner>/<repo>` in existence. The
           # exact-version tag still publishes on every dispatch, so a manual
           # rebuild remains possible without touching the floating pointer.
           #
@@ -144,10 +149,9 @@ jobs:
           # cargo does not read, so it never influenced the binary and its
           # `0.1.0` default sat stale while the workspace was at 0.0.1-1. The
           # image's version identity comes from three places that cannot drift:
-          # the binary's own `CARGO_PKG_VERSION` (`glaucus version` ->
-          # `v0.0.1-1`), the `GIT_COMMIT` stamp from `crates/glaucus/build.rs`,
-          # and the `org.opencontainers.image.version` label `metadata-action`
-          # already derives from the tag below.
+          # the binary's own `CARGO_PKG_VERSION`, the `GIT_COMMIT` stamp its
+          # crate's build.rs writes, and the `org.opencontainers.image.version`
+          # label `metadata-action` already derives from the tag below.
           # Scoped per variant: the standard and rootless images share almost
           # every layer, but keeping separate cache scopes avoids one variant
           # evicting the other's cache under GitHub's per-repo cache size cap.

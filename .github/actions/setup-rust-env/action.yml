@@ -34,13 +34,17 @@ inputs:
     default: ""
   cargo-tools:
     description: >
-      Space-separated list of cargo tools to install via install-action.
-      Deliberately NOT routed through rust-toolchain's own `cargo-tools` input:
-      that would move these binaries under its `bin` cache layer, whose key is
-      derived from the resolved tool versions alone. The git-sourced tools below
-      land in the same `~/.cargo/bin` and their revs would not be in that key,
-      so a rev bump would keep serving a stale build. The dedicated cache below
-      keys on both and stays correct.
+      Comma-separated `<crate>@<version>` list, passed straight through to
+      rust-toolchain's own `cargo-tools` input so the binaries land under its
+      `bin` cache layer. Every entry MUST carry an explicit version: that layer's
+      key is the hash of the resolved tool set, so a pinned version is what makes
+      a tool bump produce a new key -- and a bare name would instead resolve
+      through crates.io on every run.
+
+      This used to be an install-action list with comply and ignorefile built
+      from a git rev alongside it, cached by a hand-rolled ~/.cargo/bin step.
+      Both are on crates.io now, so the whole arrangement collapsed into this one
+      input and the `bin` layer.
 
       cargo-binstall is here for mise's benefit, not ours: mise's `cargo:`
       backend shells out to ~/.cargo/bin/cargo-binstall and, finding none on a
@@ -51,24 +55,6 @@ inputs:
       needing something outside it passes it here.
     required: false
     default: "cargo-binstall@1.21.1, ignorefile-cli@0.1.0, comply@0.1.1"
-  comply-rev:
-    description: >
-      Git revision of elioseverojunior/comply to install. Pinned rather than
-      tracking the default branch so a run is reproducible and the binary cache
-      has something stable to key on. comply IS on crates.io, but only as semver
-      prereleases, which `cargo install` skips -- and its releases carry no
-      binary assets, so cargo-binstall cannot serve it either. Bump this to move
-      it.
-    required: false
-    default: "a4639db7f4a6c509af4f2325a3c513966e6aabe9"
-  ignorefile-rev:
-    description: >
-      Git revision of elioseverojunior/ignorefile to install. Pinned to a rev
-      rather than tracking the default branch so a CI run is reproducible and the
-      binary cache below has something stable to key on. The project publishes no
-      tags yet; bump this to move it.
-    required: false
-    default: "0ad0e20042b173838394c58c768225255afb3955"
   cache-key-suffix:
     description: >
       Namespaces this job's registry/build cache away from the shared one. A job
@@ -158,17 +144,26 @@ runs:
     # that hand-derived its key and shared-key: the action restores both layers
     # before the toolchain is used and saves them from its own `post:`.
     #
-    # `cache-layers` deliberately omits `bin`. That layer keys on the resolved
-    # versions of the tools named in the action's own `cargo-tools` input, and
-    # the git-sourced comply/ignorefile below share `~/.cargo/bin` without
-    # appearing in it -- so a rev bump would leave the key unchanged and keep
-    # serving a stale binary. The dedicated cache further down keys on both revs
-    # and stays correct, which is why `~/.cargo/bin` remains ours to manage.
+    # All three layers, which is also the action's own default. `bin` used to be
+    # omitted here, and the reason it was no longer holds: comply and ignorefile
+    # were then installed from a git rev by dedicated steps below, sharing
+    # ~/.cargo/bin without appearing in the `bin` key -- so a rev bump would have
+    # left that key unchanged and kept serving a stale binary. Both are now
+    # pinned crates.io versions inside `cargo-tools`, so they ARE in the key the
+    # layer hashes, and the separate ~/.cargo/bin cache that used to compensate
+    # is gone with them.
     #
-    # Splitting the two layers is the point of delegating at all: `registry` is
-    # keyed on the dependency set alone and `build` on the dependency set plus
-    # the resolved toolchain, so a compiler bump no longer invalidates crates it
-    # never touched -- one cache key for both, which is what the old setup had.
+    # Leaving `bin` off after that change meant NOTHING cached ~/.cargo/bin: no
+    # layer here covers it (`registry` is registry/index, registry/cache and
+    # git/db; `build` is the target dirs), so every job recompiled all three
+    # tools from source. Measured on run 31661405846's Lint job -- 3m41s of a
+    # 4m25s job, of which cargo-binstall alone was 3m03s.
+    #
+    # Splitting the layers is the point of delegating at all: `registry` is keyed
+    # on the dependency set alone, `build` on the dependency set plus the
+    # resolved toolchain, and `bin` on the resolved tool versions alone -- so a
+    # compiler bump no longer invalidates crates it never touched, nor reinstalls
+    # tools that did not change. The old setup had one cache key for all of it.
     - name: Setup Rust toolchain
       id: rust-toolchain
       uses: elioseverojunior/rust-toolchain@2b4beb07b7a26e64b0e56c3540f61b9ea726a3e1 # v0.7.1
@@ -179,7 +174,7 @@ runs:
         targets: ${{ inputs.targets }}
         cargo-tools: ${{ inputs.cargo-tools }}
         cache: "true"
-        cache-layers: "registry,build"
+        cache-layers: "registry,build,bin"
         # Required whenever `registry` or `build` is enabled; the action fails
         # rather than silently degrading if it is missing.
         cache-key-hash: ${{ hashFiles('**/Cargo.lock') }}

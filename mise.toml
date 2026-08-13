@@ -19,6 +19,44 @@ not_found_auto_install = true
 python.uv_venv_auto = "create|source"
 quiet = true
 
+# Everything here exists to serve `hk check --all`, which is what cicd.yml's Lint
+# job runs and what hk.pkl defines. There was no [tools] table at all until this
+# one: `.github/` was transplanted from a repository that had one, so every job
+# ran `mise install` against nothing, resolved nothing, and Lint then died with
+# `hk: command not found` (exit 127). The tell was that `mise install` and
+# `mise ls` printed ZERO lines while mise-action still reported success -- an
+# absent [tools] table is silent in a way a failed install never is.
+#
+# The Rust toolchain stays out, for the reason given at the top of this file.
+[tools]
+actionlint = { version = "latest" }
+gitleaks = { version = "latest" }
+taplo = { version = "latest" }
+
+# Through mise's cargo backend, which shells out to ~/.cargo/bin/cargo-binstall
+# and falls back to compiling from source when it finds none. That fallback is
+# why `.github/actions/setup-rust-env` installs cargo-binstall through
+# rust-toolchain's `cargo-tools` input BEFORE mise-action runs, and why leaving
+# it out once cost ~9 minutes per job.
+"cargo:cargo-deny" = { version = "latest" }
+"cargo:committed" = { version = "latest" }
+"cargo:rumdl" = { version = "latest" }
+
+# aqua ships hk for darwin/arm64 but not darwin/amd64, so macOS is narrowed to
+# arm64 with the compound "<os>/<arch>" form -- mise parses both halves, and that
+# compound string is the whole platform gate. The separate `arch` key does NOT
+# filter; it documents intent only. CI is linux/x64 so this always resolves
+# there; on an Intel Mac mise skips hk entirely and a `cargo install hk` on PATH
+# is what serves the local hooks.
+"aqua:hk" = { version = "latest", os = [
+  "linux",
+  "windows",
+  "macos/arm64",
+], arch = [
+  "arm64",
+  "x64",
+], locked = false }
+
 [env]
 ARCH = "{{exec(command='uname -m')}}"
 PROJECT_NAME = "{{exec(command='basename $(git config --get remote.origin.url) .git || {{ config_root }}')}}"

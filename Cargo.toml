@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 [workspace]
-resolver = "3"
 members = ["crates/*"]
+resolver = "3"
 
 # Inheritance source for every member's `[package]`. `name` is intentionally
 # absent — it is not an inheritable key (members must be uniquely named), and
@@ -31,17 +31,17 @@ members = ["crates/*"]
 # cannot edit them after upload — only a newer version can change what the crate
 # page shows — so get them right before the first publish.
 [workspace.package]
-version = "0.0.0"
-edition = "2024"
-license = "MIT OR Apache-2.0"
+authors = ["Elio Severo Junior <elioseverojunior@gmail.com>"]
+categories = ["development-tools", "config"]
+description = "Generate .gitignore files from a declarative TOML specification."
 documentation = "https://docs.rs/rust-workspaced"
+edition = "2024"
+keywords = ["gitignore", "git", "codegen", "toml", "config"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
 repository = "https://github.com/elioseverojunior/rust-workspaced"
 rust-version = "1.88"
-description = "Generate .gitignore files from a declarative TOML specification."
-keywords = ["gitignore", "git", "codegen", "toml", "config"]
-categories = ["development-tools", "config"]
-authors = ["Elio Severo Junior <elioseverojunior@gmail.com>"]
-readme = "README.md"
+version = "0.0.0"
 
 # Files kept OUT of the published `.crate` tarball. This list previously sat
 # inside `[workspace.metadata.docs.rs]`, where nothing read it — `exclude` is a
@@ -127,9 +127,9 @@ collapsible_if = "allow"
 #   * pedantic — stricter, opinionated correctness/clarity lints.
 #   * nursery  — newer lints still being refined (may evolve); enabled per request.
 #   * cargo    — Cargo.toml hygiene: wildcard/`*` deps, missing metadata, feature names.
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
 
 # --- per-lint opt-ins (individual `restriction`-group lints) -----------------
 # The `restriction` group as a whole is too opinionated (many mutually exclusive
@@ -137,8 +137,8 @@ cargo = { level = "warn", priority = -1 }
 # already tunes: production code must not `.unwrap()`/`.expect()` (a panic is a
 # DoS per CLAUDE.md), while `allow-unwrap-in-tests`/`allow-expect-in-tests` in
 # .clippy.toml keep them ergonomic inside `#[cfg(test)]`.
-unwrap_used = "warn"
 expect_used = "warn"
+unwrap_used = "warn"
 
 # --- per-lint opt-outs (default priority 0, so they outrank the groups above) ---
 # Duplicate *transitive* dependency versions are pulled in by upstream crates and

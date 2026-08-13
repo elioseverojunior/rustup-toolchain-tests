@@ -71,7 +71,7 @@ lto = "fat"
 # "z" optimizes for binary size; use "3" for max speed instead.
 opt-level = "z"
 panic = "abort" # Optional: removes unwinding logic, saving even more space
-strip = true    # Changed to true (removes all unnecessary debug symbols)
+strip = true # Changed to true (removes all unnecessary debug symbols)
 
 # Target-specific linker improvements.
 # macOS ARM (Apple Silicon) — use the system ld64

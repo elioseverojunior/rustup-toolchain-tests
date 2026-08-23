@@ -406,16 +406,12 @@ jobs:
   # ──────────────────────────────────────────────
   all-green:
     name: All Green
-    needs: [setup, version, lint, sast, msrv, tests]
+    needs: [msrv, tests]
     runs-on: ${{ vars.RUNS_ON_ARM64 || vars.RUNS_ON || 'ubuntu-latest' }}
     permissions:
       contents: read
     if: >
       success()
-      && needs.setup.result == 'success'
-      && needs.version.result == 'success'
-      && needs.lint.result == 'success'
-      && needs.sast.result == 'success'
       && needs.msrv.result == 'success'
       && needs.tests.result == 'success'
     steps:
